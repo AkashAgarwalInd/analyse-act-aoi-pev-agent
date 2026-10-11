@@ -3,11 +3,15 @@
   aa-agent run "users get logged out early" --check "npm test" --plan-out plan.md
   aa-agent resume --thread users-get-logged-out-early --choice A [--edit "also cover refresh tokens"]
   aa-agent resume --thread users-get-logged-out-early --decision continue    # after a budget/drift pause
+  aa-agent run "users get logged out early" --check "npm test" -i    # answer each pause in the terminal
   aa-agent status --thread users-get-logged-out-early
+  aa-agent resume --thread users-get-logged-out-early    # after a crash or Ctrl-C: retry the stage it stopped in
   aa-agent run --from-session      # continue at [P] from a session the interactive skill wrote
 """
 
 import argparse
+import functools
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -15,8 +19,8 @@ from pathlib import Path
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from . import session, tools
-from .graph import build_graph
+from . import prompt, session, tools
+from .graph import CAPS, build_graph, clean_approaches
 from .stages import DEFAULT_MODEL, NAMES, make_run_stage
 
 
@@ -62,22 +66,38 @@ def _pause(snap) -> dict | None:
     return snap.interrupts[0].value if snap.interrupts else None
 
 
+def _print_changes(snap) -> None:
+    for path, loc in sorted(tools.diff_by_file(snap.values["repo"], snap.values.get("baseline_dirty", {})).items()):
+        print(f"  {path}  {loc} LOC")
+
+
+def _write_plan(snap, plan_out: str | None) -> None:
+    if plan_out:
+        Path(plan_out).write_text(plan_markdown(snap.values))
+
+
 def _report(graph, config, plan_out: str | None) -> int:
     snap = graph.get_state(config)
     thread = config["configurable"]["thread_id"]
     pause = _pause(snap)
     if pause and pause["kind"] == "plan":
-        if plan_out:
-            Path(plan_out).write_text(plan_markdown(snap.values))
+        _write_plan(snap, plan_out)
         ids = " | ".join(a["id"] for a in snap.values.get("approaches", []))
         print(f"\nstatus=awaiting_approval thread={thread}")
         print(f'approve with: aa-agent resume --thread {thread} --choice <{ids}> [--edit "<changes to the plan>"]')
         return 0
     if pause:
         print(f"\n{pause['reason']}")
+        if pause["kind"] == "drift":
+            _print_changes(snap)
         print(f"status=awaiting_{pause['kind']}_decision thread={thread}")
         print(f"continue with: aa-agent resume --thread {thread} --decision <continue|stop>")
         return 0
+    if snap.next:
+        print(f"\nstopped inside {', '.join(snap.next)} (a crash or Ctrl-C)")
+        print(f"status=interrupted thread={thread}")
+        print(_retry_hint(snap, thread))
+        return 1
     status = snap.values.get("status", "unknown")
     if snap.values.get("note"):
         print(f"\nnote: {snap.values['note']}")
@@ -90,12 +110,77 @@ def _fail(message: str) -> int:
     return 2
 
 
+# Re-running these would snapshot their own half-made edits as "already dirty" and miss them in the drift check.
+EDITING_NODES = ("execute", "fix")
+
+
+def _retry_hint(snap, thread: str) -> str:
+    if set(snap.next) & set(EDITING_NODES):
+        return ("it stopped while editing, so it can't be retried safely: check `git diff`, then finish with "
+                "/analyse-act --from E (or discard the edits and start a new run)")
+    return f"retry the stage with: aa-agent resume --thread {thread}"
+
+
+def _head_moved(snap) -> str | None:
+    """Why the thread can't continue on this checkout, or None."""
+    planned, now = snap.values.get("cache", {}).get("head", ""), tools.git_head(snap.values["repo"])
+    if planned and now != planned:
+        return (
+            f"HEAD moved since the plan was made ({planned[:12]} → {now[:12] or 'none'}); "
+            "check out the planned commit or start a new run"
+        )
+    return None
+
+
+def _answer(snap, choice: str | None, edit: str | None, decision: str | None):
+    """(resume value, None) for the pause the thread is stopped at, or (None, error message)."""
+    pause = _pause(snap)
+    if pause["kind"] == "plan":
+        ids = [a["id"] for a in snap.values.get("approaches", [])]
+        choice = (choice or "").strip().upper()
+        if choice not in ids:
+            return None, f"at the [P] gate: pass --choice with one of {ids}"
+        return {"choice": choice, "edit": edit or ""}, None
+    if edit:
+        return None, f"--edit only applies at the [P] gate; this is a {pause['kind']} pause"
+    if not decision:
+        return None, f"paused for {pause['kind']}: {pause['reason']}\npass --decision continue|stop"
+    return decision, None
+
+
+def _drive(graph, config, plan_out: str | None, ask: prompt.Ask) -> int:
+    """Answer each pause in the terminal until the run ends or the human quits (the thread stays paused)."""
+    while pause := _pause(snap := graph.get_state(config)):
+        if error := _head_moved(snap):
+            return _fail(error)
+        if pause["kind"] == "plan":
+            _write_plan(snap, plan_out)
+            picked = prompt.ask_plan(snap.values.get("approaches", []), ask, sys.stdout)
+            choice, edit, decision = (picked or {}).get("choice"), (picked or {}).get("edit"), None
+        else:
+            details = None
+            if pause["kind"] == "drift":
+                _print_changes(snap)
+                baseline = snap.values.get("baseline_dirty", {})
+                details = functools.partial(tools.diff_text, snap.values["repo"], baseline)
+            picked = decision = prompt.ask_decision(pause, ask, sys.stdout, details)
+            choice = edit = None
+        if picked is None:
+            break
+        answer, error = _answer(snap, choice, edit, decision)
+        if error:
+            return _fail(error)
+        _stream(graph, Command(resume=answer), config)
+    return _report(graph, config, plan_out)
+
+
 def _seed_from_session(graph, config, args) -> int | None:
     """Start at the [P] gate from a session the interactive skill wrote. Returns an exit code on error."""
     repo = str(Path(args.repo).resolve())
-    data = session.read(repo)
-    if not data or not data.get("approaches"):
-        return _fail(f"no .aa/current_session.json with approaches in {repo}")
+    data = session.read(repo) or {}
+    approaches = clean_approaches(data.get("approaches"))
+    if not data.get("task") or not approaches:
+        return _fail(f"no .aa/current_session.json with a task and approaches in {repo}")
     if data.get("status") not in (None, "in_progress", "awaiting_approval"):
         return _fail(f"session status is {data['status']!r}; only a session waiting at [P] can be continued")
     if data.get("chosen"):
@@ -105,13 +190,21 @@ def _seed_from_session(graph, config, args) -> int | None:
         )
     if args.task and args.task != data["task"]:
         return _fail(f"session is for {data['task']!r}, not {args.task!r}")
+    head = data.get("head") or ""
+    if not head:
+        print("note: the session doesn't record the commit its plan was made on, so a moved HEAD can't be "
+              "detected; assuming the current one", file=sys.stderr)
+    elif head != (now := tools.git_head(repo)):
+        return _fail(f"HEAD moved since the plan was made ({head[:12]} → {now[:12] or 'none'}); "
+                     "check out the planned commit or make a new plan")
     args.task = data["task"]
     plan = "\n".join(f"[{a['id']}] {a.get('title', '')}  files: {', '.join(a.get('files', []))}"
-                     for a in data["approaches"])
+                     for a in approaches)
+    tier = {"tier_assigned": data["tier"]} if data.get("tier") in CAPS else {}  # [I]'s tier, not a --tier
     graph.update_state(config, {
-        **_payload(args, repo), "approaches": data["approaches"], "tier": args.tier or data.get("tier"),
+        **_payload(args, repo), **tier, "approaches": approaches,
         "outputs": {"P": f"(plan from the interactive session)\n{plan}"}, "last_stage": "P",
-        "cache": {"status": "SESSION", "head": tools.git_head(repo), "changed": []},
+        "cache": {"status": "SESSION", "head": head or tools.git_head(repo), "changed": []},
         "session_log": data.get("stage_log", []),
     }, as_node="plan")
     return None
@@ -125,7 +218,26 @@ def _payload(args, repo: str) -> dict:
     }
 
 
-def main(argv=None, run_stage=None) -> int:
+def main(argv=None, run_stage=None, ask: prompt.Ask | None = None) -> int:
+    running: dict = {}  # _main fills in graph and config once the thread is open
+    try:
+        return _main(argv, run_stage, ask, running)
+    except BaseException as error:
+        if running:
+            thread = running["config"]["configurable"]["thread_id"]
+            try:
+                snap = running["graph"].get_state(running["config"])
+                hint = _retry_hint(snap, thread) if snap.next else None
+            except Exception as state_error:  # e.g. the checkpoint db is what failed; keep the original error
+                hint = f"couldn't read the checkpoint to say how to continue: {state_error}"
+            if hint:
+                print(f"\nstatus=interrupted thread={thread}\n{hint}", flush=True)
+        if isinstance(error, KeyboardInterrupt):
+            return 130
+        raise
+
+
+def _main(argv, run_stage, ask, running: dict) -> int:
     parser = argparse.ArgumentParser(prog="aa-agent", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -133,6 +245,10 @@ def main(argv=None, run_stage=None) -> int:
         p.add_argument("--repo", default=".", help="target repo (default: .)")
         p.add_argument("--db", help="checkpoint database (default: <repo>/.aa/agent.sqlite)")
         p.add_argument("--plan-out", help="write the [P] plan as markdown here (e.g. $GITHUB_STEP_SUMMARY)")
+
+    def interactive(p):
+        p.add_argument("-i", "--interactive", action="store_true",
+                       help="answer each pause in the terminal and keep going (off without a TTY or in CI)")
 
     run = sub.add_parser("run", help="run until the [P] gate (or the end with --analyse-only)")
     run.add_argument("task", nargs="?", help="the task (optional with --from-session)")
@@ -149,6 +265,7 @@ def main(argv=None, run_stage=None) -> int:
     )
     run.add_argument("--model", default=DEFAULT_MODEL)
     common(run)
+    interactive(run)
 
     resume = sub.add_parser("resume", help="continue a paused thread")
     resume.add_argument("--thread", required=True)
@@ -157,12 +274,22 @@ def main(argv=None, run_stage=None) -> int:
     resume.add_argument("--decision", choices=["continue", "stop"], help="at a budget or drift pause")
     resume.add_argument("--model", default=DEFAULT_MODEL)
     common(resume)
+    interactive(resume)
 
     status = sub.add_parser("status", help="show where a thread stopped")
     status.add_argument("--thread", required=True)
     common(status)
 
     args = parser.parse_args(argv)
+    if not getattr(args, "interactive", False):
+        ask = None
+    elif ask is None:
+        if os.environ.get("CI"):
+            print("interactive off: CI is set", file=sys.stderr)
+        elif not sys.stdin.isatty():
+            print("interactive off: stdin is not a terminal", file=sys.stderr)
+        else:
+            ask = input
     if args.cmd == "run":
         if not args.task and not args.from_session:
             return _fail("give a task, or --from-session")
@@ -170,6 +297,7 @@ def main(argv=None, run_stage=None) -> int:
             task = args.task or (session.read(str(Path(args.repo).resolve())) or {}).get("task", "")
             args.thread = tools.slug(task)
     graph, config = _graph(args, run_stage)
+    running.update(graph=graph, config=config)
 
     if args.cmd == "run":
         if graph.get_state(config).values:
@@ -180,34 +308,34 @@ def main(argv=None, run_stage=None) -> int:
             _stream(graph, None, config)
         else:
             _stream(graph, _payload(args, str(Path(args.repo).resolve())), config)
-        return _report(graph, config, args.plan_out)
+        return _drive(graph, config, args.plan_out, ask) if ask else _report(graph, config, args.plan_out)
 
     snap = graph.get_state(config)
     if not snap.values:
         return _fail(f"no thread {args.thread!r} in this database")
 
     if args.cmd == "resume":
-        pause = _pause(snap)
-        if not pause:
-            return _fail(f"thread {args.thread!r} is not paused")
-        planned, now = snap.values.get("cache", {}).get("head", ""), tools.git_head(snap.values["repo"])
-        if planned and now != planned:
-            return _fail(
-                f"HEAD moved since the plan was made ({planned[:12]} → {now[:12] or 'none'}); "
-                "check out the planned commit or start a new run"
-            )
-        if pause["kind"] == "plan":
-            ids = [a["id"] for a in snap.values.get("approaches", [])]
-            choice = (args.choice or "").strip().upper()
-            if choice not in ids:
-                return _fail(f"at the [P] gate: pass --choice with one of {ids}")
-            answer = {"choice": choice, "edit": args.edit or ""}
-        else:
-            if not args.decision:
-                return _fail(f"paused for {pause['kind']}: {pause['reason']}\npass --decision continue|stop")
-            answer = args.decision
+        if not _pause(snap):
+            if not snap.next:
+                return _fail(f"thread {args.thread!r} is not paused")
+            if set(snap.next) & set(EDITING_NODES) or args.choice or args.decision or args.edit:
+                return _fail(f"thread {args.thread!r} was interrupted, not paused; {_retry_hint(snap, args.thread)}")
+            if error := _head_moved(snap):
+                return _fail(error)
+            print(f"retrying {', '.join(snap.next)}", flush=True)
+            _stream(graph, None, config)  # re-runs the node it stopped in, from the last checkpoint
+            return _drive(graph, config, args.plan_out, ask) if ask else _report(graph, config, args.plan_out)
+        if error := _head_moved(snap):
+            return _fail(error)
+        if ask and not (args.choice or args.decision or args.edit):
+            if _pause(snap)["kind"] == "plan":  # the run that stopped here printed the report; show it again
+                print(f"\n━━ [P] {NAMES['P']} ━━\n{snap.values['outputs'].get('P', '')}", flush=True)
+            return _drive(graph, config, args.plan_out, ask)
+        answer, error = _answer(snap, args.choice, args.edit, args.decision)
+        if error:
+            return _fail(error)
         _stream(graph, Command(resume=answer), config)
-        return _report(graph, config, args.plan_out)
+        return _drive(graph, config, args.plan_out, ask) if ask else _report(graph, config, args.plan_out)
 
     print(f"stages: {' → '.join(snap.values.get('stage_log', []))}")
     print(f"next: {snap.next or 'end'}")

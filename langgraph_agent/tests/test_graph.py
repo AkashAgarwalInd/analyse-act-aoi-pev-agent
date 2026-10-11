@@ -1,5 +1,8 @@
 """Graph routing with a stubbed stage runner: no LLM, no network."""
 
+import subprocess
+from pathlib import Path
+
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -330,6 +333,203 @@ def test_cli_budget_pause_needs_a_decision(tmp_path, monkeypatch, capsys):
     assert "status=awaiting_approval" in capsys.readouterr().out
 
 
+def test_cli_edit_is_refused_at_a_decision_pause(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub(tokens={"I": 99_000})
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", *base], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "--decision", "continue", "--edit", "x", *base],
+                    run_stage=stub) == 2
+    assert "--edit only applies at the [P] gate" in capsys.readouterr().err
+
+
+def hit_cache(monkeypatch, head=""):
+    real = cli.build_graph
+    monkeypatch.setattr(cli, "build_graph", lambda rs, checkpointer: real(
+        rs, checkpointer, cache_check=lambda r: {"status": "HIT", "head": head, "changed": []}))
+
+
+def answers(*replies):
+    queue = list(replies)
+    return lambda question: queue.pop(0)
+
+
+def test_cli_interactive_runs_to_the_end_in_one_call(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub()
+    plan = tmp_path / "plan.md"
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    argv = ["run", "t", "-i", "--plan-out", str(plan), *base]
+    assert cli.main(argv, run_stage=stub, ask=answers("e", "", "small")) == 0
+    assert stub.calls == ["I", "P", "E", "V"] and stub.states["E"]["plan_edit"] == "small"
+    assert "status=done" in capsys.readouterr().out
+    assert plan.exists()
+
+
+def test_cli_interactive_answers_a_budget_pause_then_the_plan(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub(tokens={"I": 99_000})
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers("c", "A")) == 0
+    out = capsys.readouterr().out
+    assert "over budget" in out and "status=done" in out
+    assert stub.calls == ["I", "P", "E", "V"]
+
+
+def test_cli_interactive_quit_leaves_the_thread_paused(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers("q")) == 0
+    assert "aa-agent resume --thread t --choice" in capsys.readouterr().out
+    assert cli.main(["resume", "--thread", "t", "-i", *base], run_stage=stub, ask=answers("A")) == 0
+    out = capsys.readouterr().out
+    assert "[P] " in out and "status=done" in out
+    assert stub.calls == ["I", "P", "E", "V"]
+
+
+def test_cli_interactive_is_off_without_a_terminal(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    monkeypatch.delenv("CI", raising=False)
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=Stub()) == 0
+    captured = capsys.readouterr()
+    assert "interactive off: stdin is not a terminal" in captured.err and "status=awaiting_approval" in captured.out
+
+
+def test_cli_interactive_uses_input_in_a_terminal(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr("builtins.input", answers("B"))
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=Stub()) == 0
+    assert "status=done" in capsys.readouterr().out
+    monkeypatch.setenv("CI", "true")
+    assert cli.main(["run", "t2", "-i", "--thread", "t2", *base], run_stage=Stub()) == 0
+    assert "status=awaiting_approval" in capsys.readouterr().out
+
+
+def test_cli_interactive_resume_does_not_drop_an_edit(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", *base], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "-i", "--edit", "x", *base], run_stage=stub, ask=answers()) == 2
+    assert "pass --choice" in capsys.readouterr().err
+
+
+def test_cli_interactive_from_session(tmp_path, capsys):
+    session.write({"repo": str(tmp_path), "task": "fix it", "approaches": APPROACHES}, "awaiting_approval")
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "--from-session", "-i", *base], run_stage=stub, ask=answers("")) == 0
+    assert stub.calls == ["E", "V"] and session.read(str(tmp_path))["chosen"] == "A"
+
+
+def test_cli_interactive_refuses_when_head_moved(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch, head="a" * 40)
+    monkeypatch.setattr(cli.tools, "git_head", lambda repo: "b" * 40)
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers()) == 2  # refused before asking
+    assert "HEAD moved" in capsys.readouterr().err
+    assert stub.calls == ["I", "P"]
+
+
+class Flaky(Stub):
+    """Raises `error` the first time `stage` runs, like a crash or Ctrl-C in the middle of a stage."""
+
+    def __init__(self, stage, error, **kw):
+        super().__init__(**kw)
+        self.fail_at, self.error = stage, error
+
+    def __call__(self, stage, state):
+        if stage == self.fail_at and self.error:
+            error, self.error = self.error, None
+            raise error
+        return super().__call__(stage, state)
+
+
+def test_cli_crashed_stage_can_be_retried(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Flaky("P", RuntimeError("API overloaded"))
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    with pytest.raises(RuntimeError):
+        cli.main(["run", "t", *base], run_stage=stub)
+    assert "\nstatus=interrupted thread=t\n" in capsys.readouterr().out  # CI reads the thread id from this
+    assert cli.main(["status", "--thread", "t", *base]) == 1
+    out = capsys.readouterr().out
+    assert "stopped inside plan" in out and "\nstatus=interrupted thread=t\n" in out
+    assert "aa-agent resume --thread t" in out
+    assert cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub) == 2  # nothing to choose yet
+    # the CI example passes empty --choice/--edit when only the thread id is given
+    assert cli.main(["resume", "--thread", "t", "--choice", "", "--edit", "", *base], run_stage=stub) == 0
+    assert "status=awaiting_approval" in capsys.readouterr().out
+    assert stub.calls == ["I", "P"]  # [I] isn't re-run
+
+
+def test_cli_ctrl_c_exits_130_and_can_be_retried(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Flaky("I", KeyboardInterrupt())
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers()) == 130
+    assert "status=interrupted thread=t" in capsys.readouterr().out
+    assert cli.main(["resume", "--thread", "t", "-i", *base], run_stage=stub, ask=answers("A")) == 0
+    assert stub.calls == ["I", "P", "E", "V"]
+
+
+def test_cli_does_not_retry_a_half_done_execute(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Flaky("E", RuntimeError("boom"))
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", *base], run_stage=stub) == 0
+    with pytest.raises(RuntimeError):
+        cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub)
+    assert "stopped while editing" in capsys.readouterr().out
+    assert cli.main(["resume", "--thread", "t", *base], run_stage=stub) == 2
+    assert "stopped while editing" in capsys.readouterr().err
+    assert stub.calls == ["I", "P"]
+
+
+class EditsUnplannedFile(Stub):
+    def __call__(self, stage, state):
+        if stage == "E":
+            (Path(state["repo"]) / "b.js").write_text("one\ntwo\n")
+        return super().__call__(stage, state)
+
+
+def test_cli_interactive_drift_shows_the_change_and_the_diff(tmp_path, monkeypatch, capsys):
+    git = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    (tmp_path / "a.js").write_text("x\n")
+    git("add", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    hit_cache(monkeypatch)
+    stub = EditsUnplannedFile()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "db.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers("A", "d", "c")) == 0
+    out = capsys.readouterr().out
+    assert "files not in the plan: b.js" in out and "  b.js  2 LOC" in out
+    assert "new files (untracked):\n  b.js" in out and "status=done" in out
+
+
+def test_cli_drift_pause_lists_the_change_without_interactive(tmp_path, monkeypatch, capsys):
+    git = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    (tmp_path / "a.js").write_text("x\n")
+    git("add", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    hit_cache(monkeypatch)
+    stub = EditsUnplannedFile()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "db.sqlite")]
+    assert cli.main(["run", "t", *base], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub) == 0
+    out = capsys.readouterr().out
+    assert "  b.js  2 LOC" in out and "status=awaiting_drift_decision thread=t" in out
+
+
 def test_written_session_matches_the_skill_schema(tmp_path):
     import json
 
@@ -382,3 +582,95 @@ def test_cli_refuses_session_whose_plan_was_already_chosen(tmp_path, capsys):
     base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
     assert cli.main(["run", "--from-session", *base], run_stage=Stub()) == 2
     assert "already chosen" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw,ids", [
+    ([{"id": "a"}, {"id": " b "}], ["A", "B"]),
+    ([{"id": 1}, {"title": "no id"}, "junk", {"id": "1"}], ["1"]),  # dropped: no id, not an object, repeat
+    ({"id": "A"}, []),
+])
+def test_approach_ids_are_normalised(raw, ids):
+    g = graph(Stub(approaches=raw), status="HIT")
+    g.invoke(start(), CFG)
+    assert [a["id"] for a in g.get_state(CFG).values["approaches"]] == ids
+    if ids:
+        g.invoke(Command(resume=ids[0].lower()), CFG)
+        assert g.get_state(CFG).values["chosen"] == ids[0]
+
+
+def test_approved_drift_is_not_asked_again_when_fix_changes_the_counts():
+    stub = Stub(validate_results=(False, True), approaches=[{"id": "A", "title": "x", "files": ["a.js"],
+                                                             "est_loc": 20}])
+    g = build_graph(stub, checkpointer=InMemorySaver(),
+                    cache_check=lambda r: {"status": "HIT", "changed": []}, snapshot=lambda r: {},
+                    diff_stats=lambda r, b: (["a.js", "c.js"], 43 if "FIX" in stub.calls else 40),
+                    write_session=lambda s, st: None)
+    g.invoke(start(), CFG)
+    g.invoke(Command(resume="A"), CFG)
+    assert "40 LOC changed vs ~20" in pause(g)["reason"]
+    g.invoke(Command(resume="continue"), CFG)
+    assert pause(g) is None and g.get_state(CFG).values["status"] == "done"
+
+
+def test_a_new_unplanned_file_after_fix_is_asked_about():
+    stub = Stub(validate_results=(False, True))
+    g = build_graph(stub, checkpointer=InMemorySaver(),
+                    cache_check=lambda r: {"status": "HIT", "changed": []}, snapshot=lambda r: {},
+                    diff_stats=lambda r, b: (["a.js", "c.js", "d.js"] if "FIX" in stub.calls else ["a.js", "c.js"], 5),
+                    write_session=lambda s, st: None)
+    g.invoke(start(), CFG)
+    g.invoke(Command(resume="A"), CFG)
+    g.invoke(Command(resume="continue"), CFG)
+    assert stub.calls[-1] == "FIX" and "d.js" in pause(g)["reason"]
+
+
+def test_from_session_refuses_when_head_moved_since_the_plan(tmp_path, monkeypatch, capsys):
+    session.write({"repo": str(tmp_path), "task": "t", "approaches": APPROACHES, "cache": {"head": "a" * 40}},
+                  "awaiting_approval")
+    assert session.read(str(tmp_path))["head"] == "a" * 40
+    monkeypatch.setattr(cli.tools, "git_head", lambda repo: "b" * 40)
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "--from-session", *base], run_stage=Stub()) == 2
+    assert "HEAD moved" in capsys.readouterr().err
+
+
+def test_from_session_seeds_the_assigned_tier_and_clean_ids(tmp_path, monkeypatch):
+    session.write({"repo": str(tmp_path), "task": "t", "tier": "S", "approaches": APPROACHES}, "awaiting_approval")
+    data = session.read(str(tmp_path))
+    data["approaches"][0]["id"] = "a"
+    session.path(str(tmp_path)).write_text(__import__("json").dumps(data))
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "--from-session", *base], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "--choice", "a", *base], run_stage=stub) == 0
+    assert stub.states["E"]["tier_assigned"] == "S" and not stub.states["E"].get("tier")
+
+
+def test_crash_handler_keeps_the_original_error_when_the_checkpoint_fails(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    broken = {"db": False}
+
+    class LocksTheDb(Stub):
+        def __call__(self, stage, state):
+            broken["db"] = True
+            raise RuntimeError("database is locked")
+
+    real = cli._graph
+
+    def graph_with_failing_state(args, run_stage=None):
+        g, config = real(args, run_stage)
+        real_get_state = g.get_state
+
+        def get_state(*a, **kw):
+            if broken["db"]:
+                raise OSError("disk I/O error")
+            return real_get_state(*a, **kw)
+
+        g.get_state = get_state
+        return g, config
+
+    monkeypatch.setattr(cli, "_graph", graph_with_failing_state)
+    with pytest.raises(RuntimeError, match="database is locked"):
+        cli.main(["run", "t", "--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")], run_stage=LocksTheDb())
+    out = capsys.readouterr().out
+    assert "status=interrupted thread=t" in out and "disk I/O error" in out

@@ -1,7 +1,9 @@
 """Repo-confined tools for the stage agents, plus the deterministic git/cache helpers the graph calls itself."""
 
+import os
 import re
 import shlex
+import signal
 import subprocess
 from pathlib import Path
 
@@ -130,11 +132,18 @@ def snapshot_dirty(repo: str) -> dict[str, str]:
 
 
 def diff_stats(repo: str, baseline: dict[str, str]) -> tuple[list[str], int]:
-    """Files [E] changed and their LOC: changes vs HEAD, except that a file in `baseline` (dirty before [E])
+    """Files [E] changed and their total LOC (see diff_by_file)."""
+    stats = diff_by_file(repo, baseline)
+    files = sorted(stats)
+    return files, sum(stats[p] for p in files)
+
+
+def diff_by_file(repo: str, baseline: dict[str, str]) -> dict[str, int]:
+    """LOC per file [E] changed: changes vs HEAD, except that a file in `baseline` (dirty before [E])
     is measured against its baseline content instead, and left out only if [E] didn't touch it."""
     root = Path(repo)
     if not git_head(repo):
-        return [], 0
+        return {}
     stats = _changed(root)
     for path, old in baseline.items():
         new = _blob(root, path)
@@ -150,8 +159,51 @@ def diff_stats(repo: str, baseline: dict[str, str]) -> tuple[list[str], int]:
             stats[path] = _lines(root / path)
         else:  # [E] deleted a file that was dirty before
             stats[path] = len(_run(["git", "cat-file", "-p", old], root).stdout.splitlines())
-    files = sorted(stats)
-    return files, sum(stats[p] for p in files)
+    return stats
+
+
+def diff_text(repo: str, baseline: dict[str, str]) -> str:
+    """[E]'s changes for a human deciding at a drift pause: the same files as diff_by_file, each diffed against
+    its content before [E] when it was already dirty (so the human's own earlier edits aren't shown as [E]'s)."""
+    root = Path(repo)
+    changed = sorted(diff_by_file(repo, baseline))
+    untracked = set(filter(None, _run(
+        ["git", "ls-files", "-z", "--others", "--exclude-standard", "--", ".", ":(exclude).aa"], root
+    ).stdout.split("\0")))
+    text, new = "", []
+    for path in changed:
+        old = baseline.get(path)
+        if path not in baseline:
+            if path in untracked:
+                new.append(path)
+            else:
+                text += _run(["git", "diff", "HEAD", "--", path], root).stdout
+        elif old and (blob := _blob(root, path)) and _run(["git", "cat-file", "-e", old], root).returncode == 0:
+            body = _run(["git", "diff", old, blob], root).stdout
+            hunks = body[body.index("\n@@") + 1:] if "\n@@" in body else ""  # its header names blob ids, not path
+            text += f"--- {path} (before [E])\n+++ {path}\n{hunks}"
+        else:
+            text += f"{path}: changed, but its content before [E] can't be shown\n"
+    if new:
+        text += "\nnew files (untracked):\n" + "".join(f"  {path}\n" for path in new)
+    return text or "(no changes)\n"
+
+
+def _run_check_process(argv: list[str], cwd: Path, timeout: int) -> tuple[int | None, str]:
+    """(exit code, stdout+stderr), or (None, "") on timeout. The check runs in its own process group, which is
+    killed whole on timeout: `npm test` -> jest would otherwise outlive npm and keep running."""
+    proc = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        return None, ""
+    return proc.returncode, out + err
 
 
 # --- model-facing tools ---
@@ -271,11 +323,8 @@ def make_tools(repo: Path, *, write_aa: bool, edit: bool, checks: list[str] | No
                 f"command not allowed; allowed: {allowed or 'none (the operator passed no --check)'}. "
                 "Report checks you could not run as manual."
             )
-        try:
-            proc = _run(argv, repo, timeout=900)
-        except subprocess.TimeoutExpired:
-            return "timed out after 900s"
-        return _truncate(f"exit {proc.returncode}\n{proc.stdout}{proc.stderr}")
+        code, output = _run_check_process(argv, repo, timeout=900)
+        return "timed out after 900s" if code is None else _truncate(f"exit {code}\n{output}")
 
     funcs = [read_file, list_dir, grep, git]
     if write_aa:

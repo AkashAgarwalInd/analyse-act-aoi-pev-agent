@@ -34,8 +34,8 @@ Not doing: refactoring token storage (out of scope)
 Reply A or B (or edit the plan) to continue.
 ```
 
-Save `approaches` to `.aa/current_session.json`, append to `stage_log`.
+Save `approaches` and `head` (the commit the plan was made on: the `head=` line from `aa-cache.sh`, or `git rev-parse HEAD`) to `.aa/current_session.json`, append to `stage_log`.
 
 ## ⛔ STOP
 
-End your turn here. Do not write code. Wait for the human's choice. When they reply, record `chosen` in the session, plus `plan_edit` (their changes, in their words) if they edited the plan, then → [E].
+Ask as described in **Gates** in SKILL.md: clickable approaches when the AskUserQuestion tool is available, otherwise end your turn here. Do not write code until the human has chosen. When they reply, record `chosen` in the session, plus `plan_edit` (their changes, in their words) if they edited the plan, then → [E].

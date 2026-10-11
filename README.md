@@ -22,6 +22,16 @@ flowchart LR
 | **E**xecute | Implements only the approved approach, with one self-review pass | Diff summary compared with the plan |
 | **V**alidate | Requirements against evidence, edge cases, tests (1 retry) | Final card plus a manual verification checklist |
 
+## Demo
+
+**Clickable gates in Claude Code.** A real run on a tier-M task (add refresh tokens). At [P] you pick an approach in a picker that previews each one's files, LOC, risk and a code sketch. The run then goes straight on to [E] and [V], and `npm test` passes 7/7. Sped up about 4.5×; some redraw artifacts around the picker come from the recording, not from Claude Code. ([MP4](docs/demo/skill-clickable-gates.mp4))
+
+![/analyse-act in Claude Code: clickable approach picker](docs/demo/skill-clickable-gates.gif)
+
+**`aa-agent -i` in the terminal.** Choose an approach at [P], look at the diff at a drift pause with `d`, continue with `c`, and finish with `status=done`. The stage output comes from a stubbed model; the prompts, drift check and diff are the real CLI. ([MP4](docs/demo/aa-agent-interactive.mp4))
+
+![aa-agent run -i: answering the plan and drift pauses in the terminal](docs/demo/aa-agent-interactive.gif)
+
 ## Why
 
 - **No jumping to solutions.** No code is written until the root cause is named and a human has picked an approach.
@@ -81,6 +91,8 @@ The examples use the manual-install name; with the plugin, write `/analyse-act:a
 /analyse-act "..." --branch                            # work on a new aa/<task-slug> branch
 ```
 
+**Gates.** In Claude Code, the plan gate shows the approaches as clickable options, each with a preview of its files, LOC and risk. Pick "Other" to type changes to the plan. The fast-path, drift and budget gates are clickable too. Typing `A`, `y` or `continue` still works, and is what headless runs and the other editors use.
+
 **Fast path.** A trivial change (one file, 5 lines or fewer, no behaviour change beyond the ask, never a dependency bump) skips the stages. You get the exact diff and reply `y` to apply it. Nothing is edited before you approve, on either path.
 
 See a full sample run in [docs/examples/bug-fix-walkthrough.md](docs/examples/bug-fix-walkthrough.md).
@@ -98,7 +110,19 @@ aa-agent resume --thread users-get-logged-out-a-minute-early --choice A --edit "
 aa-agent resume --thread users-get-logged-out-a-minute-early --decision continue  # after a budget/drift pause
 aa-agent status --thread users-get-logged-out-a-minute-early
 aa-agent run --from-session   # continue at [P] from a session the interactive skill left there
+aa-agent resume --thread users-get-logged-out-a-minute-early   # after a crash or Ctrl-C: retry the stage
 ```
+
+**Interactive (local).** Add `-i` to `run` or `resume` to answer each pause in the terminal and keep going in the same process, with no separate `resume` commands:
+
+```
+$ aa-agent run "users get logged out a minute early" --check "npm test" -i
+[A] Inline fix (Recommended)   files: src/auth/token.ts   ~6 LOC   risk Low
+[B] Convert at middleware boundary   files: middleware/requireAuth.ts, src/auth/token.ts   ~25 LOC   risk Medium
+Choose A/B (or 1-2), e to edit, q to quit [A]:
+```
+
+Enter picks the recommended approach, and `e` lets you edit it. Budget and drift pauses ask `[c]ontinue / [s]top / [q]uit`. A drift pause first lists each changed file with its LOC, and `d` shows the full diff, including new files. `q` (or Ctrl-D) leaves the thread paused and prints the `resume` command. The same checks apply as for `resume`, so a moved HEAD is still refused. `-i` turns itself off when stdin isn't a terminal or `CI` is set.
 
 - The agent's file tools reject paths outside the repo and inside `.git/`. The model can only write under `.aa/` until [E]. Its git tool takes read-only subcommands, and only options from an allowlist, because options such as `--no-index` and `--contents` read files outside the repo.
 - [E] and [V] can run **only** the commands you pass with `--check`, with no shell. The model may append test files or test names, but not options or paths outside the repo. The model writes `.aa/`, so a command recorded there is never trusted. Without `--check`, the checks are reported as manual.
@@ -106,6 +130,7 @@ aa-agent run --from-session   # continue at [P] from a session the interactive s
 - The cache works as it does in the skill: HIT skips [A] and [O], DELTA rescans only the changed files (or does a full rescan if a manifest changed), and `--refresh` forces a full scan. The runner stamps the cache itself.
 - `resume` refuses if HEAD has moved since the plan was made, or if the plan had no parseable approaches. In that case the run ends `handed_off`.
 - **Pauses.** The runner enforces the skill's rules mechanically. Each stage's tokens are measured: what it read plus what it wrote, not the history re-sent on every call. A stage that runs more than 1.5× its tier budget pauses with `status=awaiting_budget_decision`. After [E], the diff is checked against the plan and the tier caps. The same check runs again after [V]'s auto-fix retry, but asks only about new problems. An unplanned file, a plan that lists no files, more than 1.5× the planned LOC, a cap breach the plan didn't flag, or `DRIFT` from the model pauses with `status=awaiting_drift_decision`. Files that already had uncommitted changes are measured from their state before [E]. Resume with `--decision continue` or `stop`.
+- **Crashes.** The run checkpoints after every stage. If a stage crashes (an API error, Ctrl-C), `status` reports `status=interrupted`, and `aa-agent resume --thread <id>` with no other options re-runs that stage only. A crash during [E] or its fix retry is never retried, because the half-made edits would hide from the drift check. Check `git diff`, then finish with `/analyse-act --from E` or start a new run.
 - **Sessions.** `.aa/current_session.json` is shared with the interactive skill. A headless run can be finished with `/analyse-act --from P`, and an interactive plan with `aa-agent run --from-session`.
 - The runner never commits or pushes. `--branch` creates `aa/<task-slug>` before [E].
 - [V] gets one auto-fix retry. If it still fails, the run ends with `status=handed_off` and exit code 1.
@@ -158,6 +183,7 @@ scripts/build-adapters.sh  regenerates adapters/ (CI fails on drift)
 tests/                   cache-script tests, e2e smoke test, fixture repo
 langgraph_agent/         headless LangGraph runner (aa-agent CLI) for CI
 docs/examples/           sample walkthrough, sample .aa/ files, GitHub Actions example
+docs/demo/               demo recordings (GIF + MP4)
 ```
 
 ## Development

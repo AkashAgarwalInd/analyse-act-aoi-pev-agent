@@ -68,25 +68,42 @@ def stage_budget(stage: str, state: AAState) -> int:
     return int(CAPS[tier_of(state)][2] * share)
 
 
-def drift_reasons(state: AAState, files: list[str], loc: int) -> list[str]:
-    """Why the [E] diff departs from the approved plan or the tier caps (empty = no drift)."""
+def clean_approaches(approaches: Any) -> list[dict]:
+    """Approaches with each id as an uppercase string (what --choice and the prompts compare against).
+    Items that aren't objects, have no id, or repeat an id are dropped."""
+    out, seen = [], set()
+    for a in approaches if isinstance(approaches, list) else []:
+        if not isinstance(a, dict) or a.get("id") is None:
+            continue
+        aid = str(a["id"]).strip().upper()
+        if aid and aid not in seen:
+            seen.add(aid)
+            out.append({**a, "id": aid})
+    return out
+
+
+def drift_reasons(state: AAState, files: list[str], loc: int) -> list[tuple[str, str]]:
+    """(key, reason) for each way the [E] diff departs from the approved plan or the tier caps (empty = no
+    drift). The key names the drift without its live counts, so a human who approved it isn't asked again
+    when [FIX] only changes the numbers; a new unplanned file changes the key and is asked about."""
     reasons = []
     if state.get("drift_reported"):
-        reasons.append("[E] reported DRIFT: it needed something the plan didn't cover")
+        reasons.append(("reported", "[E] reported DRIFT: it needed something the plan didn't cover"))
     approach = next((a for a in state.get("approaches", []) if a.get("id") == state.get("chosen")), {})
     planned = set(approach.get("files") or [])
     if not planned and files:
-        reasons.append(f"the plan listed no files, so these can't be checked against it: {', '.join(files)}")
+        reasons.append((f"no-plan-files:{','.join(files)}",
+                        f"the plan listed no files, so these can't be checked against it: {', '.join(files)}"))
     elif unplanned := sorted(set(files) - planned):
-        reasons.append(f"files not in the plan: {', '.join(unplanned)}")
+        reasons.append((f"unplanned:{','.join(unplanned)}", f"files not in the plan: {', '.join(unplanned)}"))
     est = approach.get("est_loc")
     if isinstance(est, int) and est > 0 and loc > OVER * est:
-        reasons.append(f"{loc} LOC changed vs ~{est} planned (over {OVER}×)")
+        reasons.append(("over-estimate", f"{loc} LOC changed vs ~{est} planned (over {OVER}×)"))
     max_files, max_loc, _ = CAPS[tier_of(state)]
     if not approach.get("exceeds_cap") and (len(files) > max_files or loc > max_loc):
-        reasons.append(
+        reasons.append(("over-cap",
             f"exceeds tier {tier_of(state)} cap: {len(files)} files / {loc} LOC (max {max_files} / {max_loc})"
-        )
+        ))
     return reasons
 
 
@@ -122,7 +139,7 @@ def build_graph(
             if letter == "I" and result.get("tier") in CAPS and not state.get("tier"):
                 update["tier_assigned"] = result["tier"]
             if letter == "P":
-                update["approaches"] = result.get("approaches") or []
+                update["approaches"] = clean_approaches(result.get("approaches"))
             if letter == "V":
                 update["validation_ok"] = bool(result.get("passed"))
             if letter in ("E", "FIX"):
@@ -184,14 +201,15 @@ def build_graph(
     def review(state: AAState) -> dict:
         files, loc = diff_stats(state["repo"], state.get("baseline_dirty", {}))
         approved = state.get("drift_ok", [])
-        reasons = [r for r in drift_reasons(state, files, loc) if r not in approved]  # don't re-ask after [FIX]
+        new = [(key, why) for key, why in drift_reasons(state, files, loc) if key not in approved]
         stats = {"diff_files": files, "diff_loc": loc}
-        if not reasons:
+        if not new:  # nothing the human hasn't already approved (e.g. after [FIX] changed only the counts)
             return stats
-        answer = interrupt({"kind": "drift", "reason": "; ".join(reasons), "options": ["continue", "stop"]})
+        reason = "; ".join(why for _, why in new)
+        answer = interrupt({"kind": "drift", "reason": reason, "options": ["continue", "stop"]})
         if answer != "continue":
-            return {**stats, "status": "handed_off", "note": f"stopped at drift review: {'; '.join(reasons)}"}
-        return {**stats, "drift_ok": [*approved, *reasons]}
+            return {**stats, "status": "handed_off", "note": f"stopped at drift review: {reason}"}
+        return {**stats, "drift_ok": [*approved, *(key for key, _ in new)]}
 
     def fix(state: AAState) -> dict:
         return {**stage("FIX")(state), "retry_used": True}
