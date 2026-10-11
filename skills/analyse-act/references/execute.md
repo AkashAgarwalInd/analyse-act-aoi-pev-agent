@@ -11,7 +11,7 @@
    - `git switch -c <name>`. Record `branch` in the session. Never commit or push.
 1. Re-read the chosen approach from `.aa/current_session.json` (fast path: from the change you showed).
 2. Make the edits. Match surrounding code style, naming, error handling and comment density. Add/adjust the tests named in the plan.
-3. **Drift check while editing.** Stop and ask the user if you need to:
+3. **Drift check while editing.** Stop and ask the user (see **Gates** in SKILL.md) if you need to:
    - touch a file not in the plan,
    - exceed the planned LOC by > 50% or breach the tier cap,
    - add a dependency, change a public interface, or alter behaviour beyond the acceptance criteria.

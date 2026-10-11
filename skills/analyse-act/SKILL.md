@@ -82,7 +82,20 @@ Change: README.md:2 — "teh" → "the"
 Reply y to apply, or "full" for the full AOI-PEV run.
 ```
 
-**STOP** and wait. Don't run [A]/[O]/[I]/[P], don't write `.aa/` or a session file. On `y`: run [E] (with `--branch` if given) and [V] limited to targeted tests or lint, still one retry. On `full`: start at Stage 0 as a normal run.
+**STOP** and wait (see **Gates**). Don't run [A]/[O]/[I]/[P], don't write `.aa/` or a session file. On `y`: run [E] (with `--branch` if given) and [V] limited to targeted tests or lint, still one retry. On `full`: start at Stage 0 as a normal run.
+
+## Gates (every place the run waits for the human)
+
+Always print the text first: the full report and the usual reply line (`Reply A or B…`, `Reply y…`, `continue?`). Then, **if the AskUserQuestion tool is available**, call it once so the human can click instead of typing, and end the turn. If the tool isn't available, or the call is denied or fails, just end the turn; the text reply works as before.
+
+| Gate | header | options (recommended first, its label ending in "(Recommended)") | preview |
+|---|---|---|---|
+| [P] plan | `Approach` | one per approach, `A · <title>`; at most 4, so with more show the top 4 (the rest stay in the text matrix) | files, est. LOC, risk, a 3–6 line sketch of the change |
+| Fast path | `Fast path` | `Apply`, `Full run` | the exact diff |
+| Drift ([E]) | `Drift` | `Continue`, `Stop and hand off` | what drifted: the extra files, LOC or scope |
+| Over budget | `Budget` | `Continue`, `Stop` | stage, tokens used vs budget |
+
+An option means the same as the typed reply (`A`, `y`, `full`, `continue`, `stop`). Free text ("Other") at [P] is a plan edit: record it as `plan_edit`, choose the approach it names (else the recommended one), and echo the edited approach in one line before [E]. Free text at any other gate is read as a typed reply. Clicking is approval for rule 1; nothing changes before it.
 
 ## Stage banner (print at the start of every stage)
 
@@ -115,7 +128,7 @@ End every stage with a 1–3 line **Stage summary** and `→ next: [X]`. Keep st
 
 **Stage budget = run budget × share:** A 15% · O 20% · I 20% · P 10% · E 20% · V 15%. With a cache HIT, A/O cost ~0 and their share moves to I and E.
 
-Budgets are **advisory** — you can't meter tokens exactly, so estimate from files read and output produced. At a stage boundary, if you are clearly over (≈1.5×), say `⚠ over budget (stage I ~2×) — continue?` and wait. Never cut corners silently to fit.
+Budgets are **advisory** — you can't meter tokens exactly, so estimate from files read and output produced. At a stage boundary, if you are clearly over (≈1.5×), say `⚠ over budget (stage I ~2×) — continue?` and wait (see **Gates**). Never cut corners silently to fit.
 
 Caps are defaults. Exceeding one is allowed **only** if the [P] matrix flags it (`⚠ exceeds tier M cap: 5 files`) and the human approves it.
 
