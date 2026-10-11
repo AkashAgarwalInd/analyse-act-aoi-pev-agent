@@ -1,6 +1,7 @@
 """`.aa/current_session.json` (skills/analyse-act/schemas/session.schema.json), shared with the interactive skill.
 
 The runner writes it at the [P] gate and at the end, so `/analyse-act --from E` can pick up a headless run.
+Notes from --guided pauses go on the stage_log entry of the stage they followed, as the skill writes them.
 `aa-agent run --from-session` goes the other way and starts at the [P] gate from a session the skill wrote.
 """
 
@@ -70,5 +71,9 @@ def write(state: dict, status: str) -> None:
     for key in ("chosen", "plan_edit", "branch_name"):
         if state.get(key):
             data["branch" if key == "branch_name" else key] = state[key]
-    data["stage_log"] = state.get("session_log", [])
+    log = [dict(entry) for entry in state.get("session_log", [])]
+    for note in state.get("notes", []):
+        if entry := next((e for e in reversed(log) if e.get("stage") == note["stage"]), None):
+            entry["note"] = note["note"]
+    data["stage_log"] = log
     target.write_text(json.dumps(data, indent=2) + "\n")

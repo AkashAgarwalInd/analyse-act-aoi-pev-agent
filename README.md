@@ -89,7 +89,17 @@ The examples use the manual-install name; with the plugin, write `/analyse-act:a
 /analyse-act "fix the typo in the README"              # trivial: fast path, one y/n gate
 /analyse-act "..." --full                              # never take the fast path
 /analyse-act "..." --branch                            # work on a new aa/<task-slug> branch
+/analyse-act "..." --guided                            # also pause after [A], [O], [I] to review or add context
+/analyse-act "fix the typo" --guided --full            # guided on a trivial task (it takes the fast path otherwise)
 ```
+
+**Modes.** Approving the plan at [P] is required in every mode.
+
+| Mode | How it runs | How to use it |
+|---|---|---|
+| Approval-gated (default) | [A], [O] and [I] run without stopping, reusing the cache; the run stops at [P] | `/analyse-act "<task>"` |
+| Guided | Also stops after each analysis stage that ran ([A], [O], a DELTA rescan, [I]) so you can review it, add context or stop. Your context reaches every later stage, and is kept in `.aa/current_session.json` when you switch between the skill and `aa-agent`. A trivial task still takes the fast path unless you add `--full` | `--guided` (skill, `aa-agent`, and the CI example's `guided` input) |
+| Headless / CI | Runs unattended and checkpoints; each pause suspends the run until a later `aa-agent resume` | `aa-agent run` (below) |
 
 **Gates.** In Claude Code, the plan gate shows the approaches as clickable options, each with a preview of its files, LOC and risk. Pick "Other" to type changes to the plan. The fast-path, drift and budget gates are clickable too. Typing `A`, `y` or `continue` still works, and is what headless runs and the other editors use.
 
@@ -109,6 +119,8 @@ aa-agent resume --thread users-get-logged-out-a-minute-early --choice A  # [E] t
 aa-agent resume --thread users-get-logged-out-a-minute-early --choice A --edit "also cover refresh tokens"
 aa-agent resume --thread users-get-logged-out-a-minute-early --decision continue  # after a budget/drift pause
 aa-agent status --thread users-get-logged-out-a-minute-early
+aa-agent run "users get logged out a minute early" --guided   # also pauses after [A], [O], [I]
+aa-agent resume --thread users-get-logged-out-a-minute-early --note "the bug is in refresh"   # continue with context
 aa-agent run --from-session   # continue at [P] from a session the interactive skill left there
 aa-agent resume --thread users-get-logged-out-a-minute-early   # after a crash or Ctrl-C: retry the stage
 ```
@@ -122,7 +134,7 @@ $ aa-agent run "users get logged out a minute early" --check "npm test" -i
 Choose A/B (or 1-2), e to edit, q to quit [A]:
 ```
 
-Enter picks the recommended approach, and `e` lets you edit it. Budget and drift pauses ask `[c]ontinue / [s]top / [q]uit`. A drift pause first lists each changed file with its LOC, and `d` shows the full diff, including new files. `q` (or Ctrl-D) leaves the thread paused and prints the `resume` command. The same checks apply as for `resume`, so a moved HEAD is still refused. `-i` turns itself off when stdin isn't a terminal or `CI` is set.
+Enter picks the recommended approach, and `e` lets you edit it. Budget and drift pauses ask `[c]ontinue / [s]top / [q]uit`, and a guided stage pause adds `[n]ote` to continue with context for the later stages. A drift pause first lists each changed file with its LOC, and `d` shows the full diff, including new files. `q` (or Ctrl-D) leaves the thread paused and prints the `resume` command. The same checks apply as for `resume`, so a moved HEAD is still refused. `-i` turns itself off when stdin isn't a terminal or `CI` is set.
 
 - The agent's file tools reject paths outside the repo and inside `.git/`. The model can only write under `.aa/` until [E]. Its git tool takes read-only subcommands, and only options from an allowlist, because options such as `--no-index` and `--contents` read files outside the repo.
 - [E] and [V] can run **only** the commands you pass with `--check`, with no shell. The model may append test files or test names, but not options or paths outside the repo. The model writes `.aa/`, so a command recorded there is never trusted. Without `--check`, the checks are reported as manual.

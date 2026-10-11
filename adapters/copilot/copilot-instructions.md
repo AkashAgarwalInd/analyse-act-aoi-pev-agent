@@ -6,6 +6,8 @@
 
 Work in six stages. Print a banner at the start of each stage (`━━ [I] INSPECT · tier M ━━`) and finish each one with a 1–3 line summary and `→ next: [X]`. Keep output to tables, bullets and Mermaid diagrams.
 
+**Guided mode:** by default, run A, O and I without stopping and stop at P. If the user asks for "guided", also stop after each of A, O and I that ran: end with `Reply continue, add context, or stop.` Treat any other reply as context that corrects your findings from the next stage on. Guided mode never skips the P gate.
+
 ## Stage 0: Cache
 - `.aa/` lives at the repo root. Compare `.aa/cache_meta.json → git_commit_hash` with `git rev-parse HEAD`, then count changed files: `git diff --name-only --no-renames <hash> HEAD` plus `git status --porcelain`, ignoring `.aa/`.
 - **HIT** (0 changed): load `.aa/context.md` and `.aa/schema_cache.json`, then skip A and O.

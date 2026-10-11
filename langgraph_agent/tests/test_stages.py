@@ -106,3 +106,10 @@ def test_inspect_reports_tier(tmp_path):
 def test_plan_edit_is_in_the_execute_prompt():
     message = stages.task_message("E", {"task": "t", "chosen": "A", "plan_edit": "skip the refactor"})
     assert "skip the refactor" in message and "override the plan" in message
+
+
+def test_guided_notes_are_in_later_prompts():
+    notes = [{"stage": "I", "note": "the bug is in refresh, not login"}]
+    message = stages.task_message("P", {"task": "t", "notes": notes})
+    assert "- after [I]: the bug is in refresh, not login" in message and "notes from earlier stages" in message
+    assert "notes from earlier stages" not in stages.task_message("P", {"task": "t"})

@@ -674,3 +674,121 @@ def test_crash_handler_keeps_the_original_error_when_the_checkpoint_fails(tmp_pa
         cli.main(["run", "t", "--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")], run_stage=LocksTheDb())
     out = capsys.readouterr().out
     assert "status=interrupted thread=t" in out and "disk I/O error" in out
+
+
+def stage_pauses(g, *answers):
+    """Answer guided stage pauses in order; returns the stages each pause came after."""
+    seen = []
+    for answer in answers:
+        p = pause(g)
+        assert p["kind"] == "stage"
+        seen.append(p["stage"])
+        g.invoke(Command(resume=answer), CFG)
+    return seen
+
+
+@pytest.mark.parametrize("status,reason,changed,paused", [
+    ("MISS", "test", (), ["A", "O", "I"]),
+    ("HIT", "test", (), ["I"]),  # skipped stages don't pause
+    ("DELTA", "1-files-changed", ("src/a.js",), ["DELTA", "I"]),
+])
+def test_guided_pauses_after_each_analysis_stage_then_at_the_gate(status, reason, changed, paused):
+    stub = Stub()
+    g = graph(stub, status=status, reason=reason, changed=changed)
+    g.invoke(start(guided=True), CFG)
+    assert stage_pauses(g, *["continue"] * len(paused)) == paused
+    assert pause(g)["kind"] == "plan"  # guided never replaces the [P] gate
+    g.invoke(Command(resume="A"), CFG)
+    assert g.get_state(CFG).values["status"] == "done"
+
+
+def test_guided_note_reaches_the_later_stages():
+    stub = Stub()
+    g = graph(stub, status="HIT")
+    g.invoke(start(guided=True), CFG)
+    stage_pauses(g, {"decision": "continue", "note": "the bug is in refresh"})
+    g.invoke(Command(resume="A"), CFG)
+    assert stub.states["P"]["notes"] == [{"stage": "I", "note": "the bug is in refresh"}]
+    assert stub.states["E"]["notes"] == [{"stage": "I", "note": "the bug is in refresh"}]
+
+
+def test_guided_stop_hands_off_before_planning():
+    stub = Stub()
+    g = graph(stub)
+    g.invoke(start(guided=True), CFG)
+    stage_pauses(g, "stop")
+    values = g.get_state(CFG).values
+    assert stub.calls == ["A"] and values["status"] == "handed_off" and "after stage A" in values["note"]
+
+
+def test_guided_analyse_only_ends_after_inspect():
+    stub = Stub()
+    g = graph(stub, status="HIT")
+    g.invoke(start(guided=True, analyse_only=True), CFG)
+    stage_pauses(g, "continue")
+    assert stub.calls == ["I"] and g.get_state(CFG).values["status"] == "analysed"
+
+
+def test_cli_guided_resume_with_a_note(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "--guided", *base], run_stage=stub) == 0
+    out = capsys.readouterr().out
+    assert "status=awaiting_stage_decision thread=t" in out and "--note" in out
+    assert cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub) == 2
+    assert "--choice only applies at the [P] gate" in capsys.readouterr().err
+    assert cli.main(["resume", "--thread", "t", "--decision", "stop", "--note", "x", *base], run_stage=stub) == 2
+    assert "--note is for continuing" in capsys.readouterr().err
+    assert cli.main(["resume", "--thread", "t", "--note", "look at refresh", *base], run_stage=stub) == 0
+    assert "status=awaiting_approval" in capsys.readouterr().out
+    assert cli.main(["resume", "--thread", "t", "--choice", "A", "--note", "x", *base], run_stage=stub) == 2
+    assert "--note only applies at a guided stage pause" in capsys.readouterr().err
+    assert cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub) == 0
+    assert stub.states["E"]["notes"] == [{"stage": "I", "note": "look at refresh"}]
+
+
+def test_cli_interactive_guided_runs_to_the_end(tmp_path, monkeypatch, capsys):
+    real = cli.build_graph
+    monkeypatch.setattr(cli, "build_graph", lambda rs, checkpointer: real(
+        rs, checkpointer, cache_check=lambda r: {"status": "MISS", "changed": []}, cache_stamp=lambda r: "abc"))
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    argv = ["run", "t", "--guided", "-i", *base]
+    assert cli.main(argv, run_stage=stub, ask=answers("n", "focus on auth", "c", "c", "A")) == 0
+    assert "status=done" in capsys.readouterr().out
+    assert stub.calls == ["A", "O", "I", "P", "E", "V"]
+    assert stub.states["O"]["notes"] == [{"stage": "A", "note": "focus on auth"}]
+
+
+def test_guided_notes_round_trip_through_the_session(tmp_path, monkeypatch, capsys):
+    import json
+
+    import jsonschema
+
+    from aa_agent.tools import skill_dir
+
+    # aa-agent → session: the note lands on the stage_log entry of the stage it followed (DELTA logs as O)
+    real = cli.build_graph
+    monkeypatch.setattr(cli, "build_graph", lambda rs, checkpointer: real(
+        rs, checkpointer, cache_check=lambda r: {"status": "DELTA", "reason": "1-files-changed", "changed": ["x.js"]},
+        cache_stamp=lambda r: "abc"))
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "--guided", *base], run_stage=Stub()) == 0
+    assert cli.main(["resume", "--thread", "t", "--note", "auth only", *base], run_stage=Stub()) == 0
+    assert cli.main(["resume", "--thread", "t", "--note", "refresh path", *base], run_stage=Stub()) == 0
+    data = session.read(str(tmp_path))
+    assert data["status"] == "awaiting_approval"
+    assert {e["stage"]: e.get("note") for e in data["stage_log"]} == {"O": "auth only", "I": "refresh path", "P": None}
+    schema = json.loads((skill_dir() / "schemas" / "session.schema.json").read_text())
+    jsonschema.validate(data, schema)
+
+    # session (as the skill or that run left it) → aa-agent --from-session: the notes reach [E] and stay logged
+    stub = Stub()
+    base2 = ["--repo", str(tmp_path), "--db", str(tmp_path / "b.sqlite")]
+    assert cli.main(["run", "--from-session", *base2], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "--choice", "A", *base2], run_stage=stub) == 0
+    assert stub.states["E"]["notes"] == [{"stage": "O", "note": "auth only"}, {"stage": "I", "note": "refresh path"}]
+    log = session.read(str(tmp_path))["stage_log"]
+    assert [(e["stage"], e.get("note")) for e in log] == [
+        ("O", "auth only"), ("I", "refresh path"), ("P", None), ("E", None), ("V", None)]

@@ -6,6 +6,8 @@ cache ─HIT──────────────────────�
   └─MISS / --refresh / manifest changed → analyse → observe ┘      review ⏸ ← fix (once) ←fail┘
 
 Every LLM stage goes through `budget` (⏸ if the stage ran over 1.5× its token budget) before its next stage.
+With --guided, [A], [O], DELTA and [I] then go through `guide` ⏸, where the human continues (optionally with a
+note for the later stages) or stops. Guided adds pauses; it never replaces the [P] gate.
 ⏸ = interrupt(): the run stops and `aa-agent resume` continues it. Pause nodes are deterministic, because
 LangGraph re-runs an interrupted node from the top when it resumes.
 """
@@ -37,6 +39,7 @@ CAPS = {"S": (2, 50, 20_000), "M": (3, 150, 60_000), "L": (8, 400, 150_000)}
 SHARES = {"A": 0.15, "O": 0.20, "I": 0.20, "P": 0.10, "E": 0.20, "V": 0.15}
 SHARE_OF = {"DELTA": "O", "FIX": "V"}
 OVER = 1.5
+GUIDED_STAGES = ("A", "O", "DELTA", "I")  # --guided pauses after these; [P] is a gate in every mode
 
 
 def route_cache(state: AAState) -> str:
@@ -162,7 +165,7 @@ def build_graph(
             return {"status": "handed_off", "note": f"stopped by the human after stage {letter} ran over budget"}
         return {"budget_ok": [*state.get("budget_ok", []), letter]}
 
-    def after_budget(state: AAState) -> str:
+    def next_node(state: AAState) -> str:
         if state.get("status"):
             return "finish"
         letter = state["last_stage"]
@@ -177,6 +180,27 @@ def build_graph(
         if letter == "V":
             return "finish" if state.get("validation_ok") or state.get("retry_used") else "fix"
         return "review"  # E and FIX: check the diff against the plan before validating
+
+    def after_budget(state: AAState) -> str:
+        if state.get("guided") and not state.get("status") and state["last_stage"] in GUIDED_STAGES:
+            return "guide"
+        return next_node(state)
+
+    def guide(state: AAState) -> dict:
+        letter = state["last_stage"]
+        answer = interrupt({
+            "kind": "stage",
+            "stage": letter,
+            "reason": f"[{letter}] done: review it, add a note for the next stages, or stop",
+            "options": ["continue", "stop"],
+        })
+        if not isinstance(answer, dict):
+            answer = {"decision": answer}
+        if answer.get("decision") != "continue":
+            return {"status": "handed_off", "note": f"stopped by the human after stage {letter}"}
+        note = str(answer.get("note") or "").strip()
+        # stage as the session logs it (DELTA is [O]'s rescan), so session.write can attach the note to that entry
+        return {"notes": [{"stage": SHARE_OF.get(letter, letter), "note": note}]} if note else {}
 
     def gate(state: AAState) -> dict:
         ids = [a["id"] for a in state.get("approaches", [])]
@@ -235,6 +259,7 @@ def build_graph(
     g.add_node("inspect", stage("I"))
     g.add_node("plan", stage("P"))
     g.add_node("budget", budget)
+    g.add_node("guide", guide)
     g.add_node("gate", gate)
     g.add_node("execute", execute)
     g.add_node("review", review)
@@ -247,6 +272,7 @@ def build_graph(
     for node in ("analyse", "delta", "observe", "inspect", "plan", "execute", "validate", "fix"):
         g.add_edge(node, "budget")
     g.add_conditional_edges("budget", after_budget)
+    g.add_conditional_edges("guide", next_node)
     g.add_edge("gate", "execute")
     g.add_conditional_edges("review", lambda s: "finish" if s.get("status") else "validate")
     g.add_edge("finish", END)
