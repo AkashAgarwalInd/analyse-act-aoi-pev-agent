@@ -3,12 +3,20 @@
 ## 0.2.0 — 2026-10-11
 
 - `aa-cache.sh --stamp` writes `cache_meta.json` and `dirty_at_scan.txt` from git and the clock, so the model no longer writes them by hand.
-- Fast path: a trivial task (one file, 5 lines or fewer) skips the stages, shows the exact diff and waits for `y`. Use `--full` to opt out.
+- Fast path: a trivial task (one file, 5 lines or fewer, never a dependency bump) skips the stages, shows the exact diff and waits for `y`. Use `--full` to opt out.
 - `--branch` creates `aa/<task-slug>` at the start of [E]. The skill still never commits.
 - Stage banners are required in every mode, including `--analyse-only`.
 - GitHub Copilot and Aider adapters, generated like the Codex and Cursor ones. The CI drift check now also catches untracked adapter files.
-- `langgraph_agent/`: the headless `aa-agent` CLI for CI. It is built on LangGraph, checkpoints to SQLite, pauses for approval with `interrupt()` at [P], uses repo-confined tools, and has offline tests in CI. There is also an example GitHub Actions workflow.
-- The e2e smoke test has a third run for the fast path.
+- `langgraph_agent/`: the headless `aa-agent` CLI for CI, built on LangGraph with SQLite checkpoints.
+  - It pauses with `interrupt()` at the [P] gate. The human can choose an approach and also edit it (`--edit`).
+  - It pauses for a continue/stop decision when a stage runs more than 1.5× its token budget, or when the [E] diff departs from the plan or the tier caps.
+  - The cache works as it does in the skill: HIT, DELTA (rescan only the changed files) or MISS, plus `--refresh`.
+  - The tools stay inside the repo. Git is read-only with an option allowlist, and only `--check` commands can run.
+  - `resume` refuses if HEAD has moved since the plan was made.
+  - It shares `.aa/current_session.json` with the skill (`run --from-session`).
+  - There is an example GitHub Actions workflow, and the offline tests run in CI.
+- The e2e smoke test covers the fast path, approving it with `y`, and `--branch`.
+- CI installs check-jsonschema so the stamped `cache_meta.json` is validated against its schema, and the shell scripts are shellcheck-clean.
 
 ## 0.1.0 — 2026-10-11
 
