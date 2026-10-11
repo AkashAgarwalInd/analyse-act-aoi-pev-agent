@@ -66,6 +66,11 @@ def _pause(snap) -> dict | None:
     return snap.interrupts[0].value if snap.interrupts else None
 
 
+def _print_changes(snap) -> None:
+    for path, loc in sorted(tools.diff_by_file(snap.values["repo"], snap.values.get("baseline_dirty", {})).items()):
+        print(f"  {path}  {loc} LOC")
+
+
 def _write_plan(snap, plan_out: str | None) -> None:
     if plan_out:
         Path(plan_out).write_text(plan_markdown(snap.values))
@@ -83,11 +88,14 @@ def _report(graph, config, plan_out: str | None) -> int:
         return 0
     if pause:
         print(f"\n{pause['reason']}")
+        if pause["kind"] == "drift":
+            _print_changes(snap)
         print(f"status=awaiting_{pause['kind']}_decision thread={thread}")
         print(f"continue with: aa-agent resume --thread {thread} --decision <continue|stop>")
         return 0
     if snap.next:
-        print(f"\nstatus=interrupted thread={thread} (stopped inside {', '.join(snap.next)})")
+        print(f"\nstopped inside {', '.join(snap.next)} (a crash or Ctrl-C)")
+        print(f"status=interrupted thread={thread}")
         print(_retry_hint(snap, thread))
         return 1
     status = snap.values.get("status", "unknown")
@@ -152,10 +160,8 @@ def _drive(graph, config, plan_out: str | None, ask: prompt.Ask) -> int:
         else:
             details = None
             if pause["kind"] == "drift":
-                repo = snap.values["repo"]
-                for path, loc in sorted(tools.diff_by_file(repo, snap.values.get("baseline_dirty", {})).items()):
-                    print(f"  {path}  {loc} LOC")
-                details = functools.partial(tools.diff_text, repo)
+                _print_changes(snap)
+                details = functools.partial(tools.diff_text, snap.values["repo"])
             picked = decision = prompt.ask_decision(pause, ask, sys.stdout, details)
             choice = edit = None
         if picked is None:
@@ -203,14 +209,19 @@ def _payload(args, repo: str) -> dict:
 
 
 def main(argv=None, run_stage=None, ask: prompt.Ask | None = None) -> int:
+    running: dict = {}  # _main fills in graph and config once the thread is open
     try:
-        return _main(argv, run_stage, ask)
-    except KeyboardInterrupt:
-        print("\ninterrupted. `aa-agent status --thread <id>` shows how to continue.", file=sys.stderr)
-        return 130
+        return _main(argv, run_stage, ask, running)
+    except BaseException as error:
+        if running and (snap := running["graph"].get_state(running["config"])).next:
+            thread = running["config"]["configurable"]["thread_id"]
+            print(f"\nstatus=interrupted thread={thread}\n{_retry_hint(snap, thread)}", flush=True)
+        if isinstance(error, KeyboardInterrupt):
+            return 130
+        raise
 
 
-def _main(argv, run_stage, ask) -> int:
+def _main(argv, run_stage, ask, running: dict) -> int:
     parser = argparse.ArgumentParser(prog="aa-agent", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -270,6 +281,7 @@ def _main(argv, run_stage, ask) -> int:
             task = args.task or (session.read(str(Path(args.repo).resolve())) or {}).get("task", "")
             args.thread = tools.slug(task)
     graph, config = _graph(args, run_stage)
+    running.update(graph=graph, config=config)
 
     if args.cmd == "run":
         if graph.get_state(config).values:

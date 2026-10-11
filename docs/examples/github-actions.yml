@@ -4,6 +4,7 @@
 #      says what it's waiting for and which inputs to give next.
 #   2. Run it again with the thread id plus either a choice (A, B, …, optionally with an edit) or a
 #      decision (continue / stop) — repeat until it finishes. Always run it on the SAME commit.
+#   3. If a run crashed (API error, timeout), run it again with only the thread id: it retries that stage.
 #
 # Every run saves the checkpoint and the uncommitted edits (.aa/worktree.patch) as artifact aa-<thread>,
 # and the next run restores both, so a run can pause any number of times. The final diff is in the job
@@ -61,7 +62,7 @@ jobs:
           name: aa-${{ inputs.thread }}
           path: .aa
           search_artifacts: true
-          workflow_conclusion: success
+          workflow_conclusion: completed  # also a failed run, so a crashed stage can be retried
       - if: inputs.thread != ''
         run: if [ -s .aa/worktree.patch ]; then git apply .aa/worktree.patch; fi
 

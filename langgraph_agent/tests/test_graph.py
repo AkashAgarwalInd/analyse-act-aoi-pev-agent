@@ -457,11 +457,14 @@ def test_cli_crashed_stage_can_be_retried(tmp_path, monkeypatch, capsys):
     base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
     with pytest.raises(RuntimeError):
         cli.main(["run", "t", *base], run_stage=stub)
+    assert "\nstatus=interrupted thread=t\n" in capsys.readouterr().out  # CI reads the thread id from this
     assert cli.main(["status", "--thread", "t", *base]) == 1
     out = capsys.readouterr().out
-    assert "status=interrupted thread=t (stopped inside plan)" in out and "aa-agent resume --thread t" in out
+    assert "stopped inside plan" in out and "\nstatus=interrupted thread=t\n" in out
+    assert "aa-agent resume --thread t" in out
     assert cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub) == 2  # nothing to choose yet
-    assert cli.main(["resume", "--thread", "t", *base], run_stage=stub) == 0
+    # the CI example passes empty --choice/--edit when only the thread id is given
+    assert cli.main(["resume", "--thread", "t", "--choice", "", "--edit", "", *base], run_stage=stub) == 0
     assert "status=awaiting_approval" in capsys.readouterr().out
     assert stub.calls == ["I", "P"]  # [I] isn't re-run
 
@@ -471,7 +474,7 @@ def test_cli_ctrl_c_exits_130_and_can_be_retried(tmp_path, monkeypatch, capsys):
     stub = Flaky("I", KeyboardInterrupt())
     base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
     assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers()) == 130
-    assert "interrupted" in capsys.readouterr().err
+    assert "status=interrupted thread=t" in capsys.readouterr().out
     assert cli.main(["resume", "--thread", "t", "-i", *base], run_stage=stub, ask=answers("A")) == 0
     assert stub.calls == ["I", "P", "E", "V"]
 
@@ -483,6 +486,7 @@ def test_cli_does_not_retry_a_half_done_execute(tmp_path, monkeypatch, capsys):
     assert cli.main(["run", "t", *base], run_stage=stub) == 0
     with pytest.raises(RuntimeError):
         cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub)
+    assert "stopped while editing" in capsys.readouterr().out
     assert cli.main(["resume", "--thread", "t", *base], run_stage=stub) == 2
     assert "stopped while editing" in capsys.readouterr().err
     assert stub.calls == ["I", "P"]
@@ -508,6 +512,21 @@ def test_cli_interactive_drift_shows_the_change_and_the_diff(tmp_path, monkeypat
     out = capsys.readouterr().out
     assert "files not in the plan: b.js" in out and "  b.js  2 LOC" in out
     assert "new files (untracked):\n  b.js" in out and "status=done" in out
+
+
+def test_cli_drift_pause_lists_the_change_without_interactive(tmp_path, monkeypatch, capsys):
+    git = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    (tmp_path / "a.js").write_text("x\n")
+    git("add", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    hit_cache(monkeypatch)
+    stub = EditsUnplannedFile()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "db.sqlite")]
+    assert cli.main(["run", "t", *base], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub) == 0
+    out = capsys.readouterr().out
+    assert "  b.js  2 LOC" in out and "status=awaiting_drift_decision thread=t" in out
 
 
 def test_written_session_matches_the_skill_schema(tmp_path):
