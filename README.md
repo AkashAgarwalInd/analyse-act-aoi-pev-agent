@@ -22,6 +22,16 @@ flowchart LR
 | **E**xecute | Implements only the approved approach, with one self-review pass | Diff summary compared with the plan |
 | **V**alidate | Requirements against evidence, edge cases, tests (1 retry) | Final card plus a manual verification checklist |
 
+## Demo
+
+**Clickable gates in Claude Code.** A real run on a tier-M task (add refresh tokens). At [P] you pick an approach in a picker that previews each one's files, LOC, risk and a code sketch. The run then goes straight on to [E] and [V], and `npm test` passes 7/7. Sped up about 4.5×; some redraw artifacts around the picker come from the recording, not from Claude Code. ([MP4](docs/demo/skill-clickable-gates.mp4))
+
+![/analyse-act in Claude Code: clickable approach picker](docs/demo/skill-clickable-gates.gif)
+
+**`aa-agent -i` in the terminal.** Choose an approach at [P], look at the diff at a drift pause with `d`, continue with `c`, and finish with `status=done`. The stage output comes from a stubbed model; the prompts, drift check and diff are the real CLI. ([MP4](docs/demo/aa-agent-interactive.mp4))
+
+![aa-agent run -i: answering the plan and drift pauses in the terminal](docs/demo/aa-agent-interactive.gif)
+
 ## Why
 
 - **No jumping to solutions.** No code is written until the root cause is named and a human has picked an approach.
@@ -173,6 +183,7 @@ scripts/build-adapters.sh  regenerates adapters/ (CI fails on drift)
 tests/                   cache-script tests, e2e smoke test, fixture repo
 langgraph_agent/         headless LangGraph runner (aa-agent CLI) for CI
 docs/examples/           sample walkthrough, sample .aa/ files, GitHub Actions example
+docs/demo/               demo recordings (GIF + MP4)
 ```
 
 ## Development

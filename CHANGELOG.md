@@ -7,6 +7,7 @@
 - `aa-agent resume --edit` at a budget or drift pause is now an error instead of being silently ignored.
 - At a drift pause, `-i` lists each changed file with its LOC, and `d` shows the full diff.
 - A stage that crashed or was stopped with Ctrl-C can be re-run with `aa-agent resume --thread <id>`; `status` reports it as `interrupted`. A crash during [E] is never retried, since its half-made edits would hide from the drift check. A crash or Ctrl-C prints `status=interrupted thread=<id>`, so the example CI workflow saves the thread, and it now restores artifacts from failed runs too: rerun it with only the thread id to retry. Ctrl-C exits 130 instead of printing a traceback.
+- README: demo recordings of the clickable gates and `aa-agent -i` (`docs/demo/`).
 - Without `-i`, a drift pause now lists each changed file with its LOC as well.
 
 ## 0.2.0 — 2026-10-11
