@@ -66,6 +66,8 @@ def _report(graph, config, plan_out: str | None) -> int:
         print(f"approve with: aa-agent resume --thread {thread} --choice <{ids}>")
         return 0
     status = snap.values.get("status", "unknown")
+    if snap.values.get("note"):
+        print(f"\nnote: {snap.values['note']}")
     print(f"\nstatus={status} thread={thread}")
     return 0 if status in ("analysed", "done") else 1
 
@@ -83,9 +85,13 @@ def main(argv=None, run_stage=None) -> int:
     run.add_argument("task")
     run.add_argument("--thread", help="thread id (default: task slug)")
     run.add_argument("--analyse-only", action="store_true", help="stop after [I]")
+    run.add_argument("--refresh", action="store_true", help="ignore the cache: full [A] and [O]")
     run.add_argument("--tier", choices=["S", "M", "L"])
     run.add_argument("--branch", action="store_true", help="create aa/<task-slug> before [E]")
-    run.add_argument("--check", action="append", default=[], help="extra allowed check command (repeatable)")
+    run.add_argument(
+        "--check", action="append", default=[],
+        help="a test/lint command [E]/[V] may run, e.g. 'npm test' (repeatable). Nothing else can be run.",
+    )
     run.add_argument("--model", default=DEFAULT_MODEL)
     common(run)
 
@@ -109,7 +115,8 @@ def main(argv=None, run_stage=None) -> int:
             print(f"thread {args.thread!r} already exists; use `resume`, `status`, or a new --thread", file=sys.stderr)
             return 2
         payload = {
-            "repo": str(Path(args.repo).resolve()), "task": args.task, "analyse_only": args.analyse_only,
+            "repo": str(Path(args.repo).resolve()), "task": args.task,
+            "analyse_only": args.analyse_only, "refresh": args.refresh,
             "tier": args.tier, "branch": args.branch, "checks": args.check,
             "outputs": {}, "stage_log": [], "retry_used": False,
         }
@@ -129,6 +136,14 @@ def main(argv=None, run_stage=None) -> int:
         choice = args.choice.strip().upper()
         if ids and choice not in ids:
             print(f"unknown approach {choice!r}; choose one of {ids}", file=sys.stderr)
+            return 2
+        planned, now = snap.values.get("cache", {}).get("head", ""), tools.git_head(snap.values["repo"])
+        if planned and now != planned:
+            print(
+                f"HEAD moved since the plan was made ({planned[:12]} → {now[:12] or 'none'}); "
+                "check out the planned commit or start a new run",
+                file=sys.stderr,
+            )
             return 2
         _stream(graph, Command(resume=choice), config)
         return _report(graph, config, args.plan_out)

@@ -1,4 +1,3 @@
-import json
 import subprocess
 
 import pytest
@@ -38,10 +37,23 @@ def test_read_tools(repo):
     assert "init" in t["git"].invoke({"argv": ["log", "--oneline"]})
 
 
-@pytest.mark.parametrize("argv", [["push"], ["commit", "-m", "x"], ["diff", "--output=/tmp/x"], ["log", "-c"]])
-def test_git_rejects_writes(repo, argv):
+@pytest.mark.parametrize("argv", [
+    ["push"], ["commit", "-m", "x"], ["diff", "--output=/tmp/x"], ["log", "-c"],
+    # these read or run things outside the repo; a blocklist missed the first two
+    ["diff", "--no-index", "/etc/hosts", "/dev/null"], ["blame", "--contents", "x", "a.txt"],
+    ["grep", "-f", "x", "a"], ["grep", "-O", "a"], ["show", "../../etc/passwd"], ["log", "--exec-path"],
+])
+def test_git_rejects_writes_and_escapes(repo, argv):
     with pytest.raises(ValueError):
         by_name(repo)["git"].invoke({"argv": argv})
+
+
+@pytest.mark.parametrize("argv", [
+    ["log", "-5", "--oneline", "--format=%h %s"], ["diff", "HEAD~1..HEAD", "--", "a.txt"],
+    ["grep", "-n", "-e", "/api/v1", "--", "src"], ["blame", "-L", "1,2", "a.txt"], ["show", "HEAD:a.txt"],
+])
+def test_git_allows_common_reads(argv):
+    tools.check_git_args(argv)
 
 
 def test_stage_tool_sets(repo):
@@ -66,15 +78,20 @@ def test_edit_file_needs_unique_match(repo):
         t.invoke({"path": "a.txt", "old": "two", "new": "2"})
 
 
-def test_run_check_only_allows_recorded_commands(repo):
-    (repo / ".aa").mkdir()
-    (repo / ".aa" / "schema_cache.json").write_text(json.dumps({"tests": {"command": "git status"}}))
-    checks = tools.allowed_checks(repo, ["git --version"])
-    t = by_name(repo, checks=checks)["run_check"]
+def test_run_check_only_allows_operator_commands(repo):
+    t = by_name(repo, checks=["git status", "git --version"])["run_check"]
     assert t.invoke({"command": "git status --short"}).startswith("exit 0")  # extra args allowed
     assert t.invoke({"command": "git --version"}).startswith("exit 0")
     with pytest.raises(ValueError, match="not allowed"):
         t.invoke({"command": "rm -rf ."})
+
+
+def test_model_cannot_grant_itself_a_command(repo):
+    # the model writes .aa/schema_cache.json during [O]; a test command recorded there must not become runnable
+    by_name(repo, write_aa=True)["write_aa_file"].invoke(
+        {"name": "schema_cache.json", "content": '{"tests": {"command": "sh"}}'})
+    with pytest.raises(ValueError, match="none"):
+        by_name(repo, checks=[])["run_check"].invoke({"command": "sh -c 'echo pwned'"})
 
 
 def test_cache_check_and_stamp(repo):
@@ -86,6 +103,11 @@ def test_cache_check_and_stamp(repo):
     assert tools.cache_check(str(repo)) == {"status": "HIT", "reason": "up-to-date", "changed": [],
                                             "head": tools.cache_stamp(str(repo)),
                                             "cached": tools.cache_stamp(str(repo))}
+
+
+def test_git_head(repo, tmp_path_factory):
+    assert len(tools.git_head(str(repo))) == 40
+    assert tools.git_head(str(tmp_path_factory.mktemp("plain"))) == ""
 
 
 def test_create_branch_dedupes(repo):

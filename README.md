@@ -92,15 +92,18 @@ See a full sample run in [docs/examples/bug-fix-walkthrough.md](docs/examples/bu
 ```sh
 pip install "analyse-act-agent @ git+https://github.com/AkashAgarwalInd/analyse-act-aoi-pev-agent#subdirectory=langgraph_agent"
 export ANTHROPIC_API_KEY=...
-aa-agent run "users get logged out a minute early" --plan-out plan.md   # stops at [P]
+aa-agent run "users get logged out a minute early" --check "npm test" --plan-out plan.md   # stops at [P]
 aa-agent resume --thread users-get-logged-out-a-minute-early --choice A  # [E] then [V]
 aa-agent status --thread users-get-logged-out-a-minute-early
 ```
 
-- The agent's tools are confined to the repo. The model can only write under `.aa/` until [E], git access is read-only, and `run_check` runs only the test command recorded in `.aa/schema_cache.json` plus any `--check "<cmd>"` you pass.
+- The agent's file tools reject paths outside the repo and inside `.git/`. The model can only write under `.aa/` until [E]. Its git tool takes read-only subcommands, and only options from an allowlist, because options such as `--no-index` and `--contents` read files outside the repo.
+- [E] and [V] can run **only** the commands you pass with `--check` (extra arguments allowed, no shell). The model writes `.aa/`, so a command recorded there is never trusted. Without `--check`, the checks are reported as manual.
+- The cache works as it does in the skill: HIT skips [A] and [O], DELTA rescans only the changed files (or does a full rescan if a manifest changed), and `--refresh` forces a full scan. The runner stamps the cache itself.
+- `resume` refuses if HEAD has moved since the plan was made, or if the plan had no parseable approaches. In that case the run ends `handed_off`.
 - The runner never commits or pushes. `--branch` creates `aa/<task-slug>` before [E].
 - [V] gets one auto-fix retry. If it still fails, the run ends with `status=handed_off` and exit code 1.
-- [docs/examples/github-actions.yml](docs/examples/github-actions.yml) is a two-dispatch example: one dispatch plans, and the other approves and executes.
+- [docs/examples/github-actions.yml](docs/examples/github-actions.yml) is a two-dispatch example: one dispatch plans, and the other approves and executes. The resulting diff is uploaded as a patch even when [V] hands off.
 - Add `.aa/agent.sqlite` to `.gitignore`.
 
 

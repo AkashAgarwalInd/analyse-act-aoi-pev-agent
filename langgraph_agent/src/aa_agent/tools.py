@@ -1,6 +1,5 @@
 """Repo-confined tools for the stage agents, plus the deterministic git/cache helpers the graph calls itself."""
 
-import json
 import re
 import shlex
 import subprocess
@@ -10,7 +9,20 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 MAX_OUTPUT = 8000
 GIT_READONLY = {"log", "show", "diff", "blame", "status", "ls-files", "rev-parse", "grep"}
-GIT_FORBIDDEN_ARGS = ("--output", "--exec", "--ext-diff", "--textconv", "-c", "--config")
+# Allowlist, not a blocklist: options like --no-index, --contents, -f, -O or --output read or run things
+# outside the repo, and new ones appear in every git release.
+GIT_FLAGS = {
+    "--", "-p", "--patch", "-s", "--stat", "--shortstat", "--name-only", "--name-status", "--oneline",
+    "--graph", "--decorate", "--no-color", "--reverse", "--all", "--follow", "--first-parent", "--no-merges",
+    "--cached", "--staged", "-w", "--ignore-all-space", "-b", "--short", "--porcelain", "--untracked-files",
+    "-u", "--others", "--modified", "--deleted", "-i", "--ignore-case", "-E", "-F", "-I", "-l", "-n",
+    "--line-number", "-e", "-S", "-G", "-L", "--abbrev-ref", "--verify", "-q", "--quiet", "--show-toplevel",
+    "--word-diff", "--date=iso", "--date=short", "--date=relative",
+}
+GIT_VALUE_FLAGS = (
+    "--format=", "--pretty=", "--since=", "--until=", "--after=", "--before=", "--author=", "--grep=",
+    "--max-count=", "--unified=", "--abbrev=", "--untracked-files=", "--diff-filter=",
+)
 
 
 def skill_dir() -> Path:
@@ -69,16 +81,9 @@ def create_branch(repo: str, task: str) -> str:
     return name
 
 
-def allowed_checks(repo: Path, extra: list[str]) -> list[str]:
-    """Test command from .aa/schema_cache.json plus any --check commands given on the CLI."""
-    commands = list(extra)
-    try:
-        cached = json.loads((repo / ".aa" / "schema_cache.json").read_text())
-        if cmd := cached.get("tests", {}).get("command"):
-            commands.append(cmd)
-    except (OSError, ValueError, AttributeError):
-        pass
-    return commands
+def git_head(repo: str) -> str:
+    proc = _run(["git", "rev-parse", "--verify", "-q", "HEAD"], Path(repo))
+    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 # --- model-facing tools ---
@@ -95,8 +100,26 @@ def safe_path(repo: Path, rel: str) -> Path:
     return target
 
 
+def check_git_args(argv: list[str]) -> None:
+    """Raise unless argv is an allowed read-only subcommand with allowlisted options and no outside paths."""
+    if not argv or argv[0] not in GIT_READONLY:
+        raise ValueError(f"git subcommand not allowed: {argv[:1]}")
+    pattern_next = False  # the value after -e/-S/-G/-L is a pattern or range, not a path
+    for arg in argv[1:]:
+        if pattern_next:
+            pattern_next = False
+        elif arg.startswith("-"):
+            if not (arg in GIT_FLAGS or arg.startswith(GIT_VALUE_FLAGS) or re.fullmatch(r"-\d+|-U\d+", arg)):
+                raise ValueError(f"git option not allowed: {arg}")
+            pattern_next = arg in ("-e", "-S", "-G", "-L")
+        elif arg.startswith(("/", "~")) or ".." in arg.split("/"):
+            raise ValueError(f"git argument outside the repo: {arg}")
+
+
 def make_tools(repo: Path, *, write_aa: bool, edit: bool, checks: list[str] | None) -> list[BaseTool]:
-    """Tools for one stage. Read tools always; .aa/ writes for A–P; source edits for E; checks for E/V."""
+    """Tools for one stage. Read tools always; .aa/ writes for A–P; source edits for E; checks for E/V.
+
+    `checks` comes only from the operator's --check flags, never from .aa/ (which the model writes)."""
 
     def read_file(path: str, offset: int = 0, limit: int = 400) -> str:
         """Read a text file (repo-relative path), from line `offset`, at most `limit` lines."""
@@ -119,10 +142,7 @@ def make_tools(repo: Path, *, write_aa: bool, edit: bool, checks: list[str] | No
     def git(argv: list[str]) -> str:
         """Run a read-only git command, e.g. ["log", "-5", "--oneline"]. Allowed: log show diff blame status
         ls-files rev-parse grep."""
-        if not argv or argv[0] not in GIT_READONLY:
-            raise ValueError(f"git subcommand not allowed: {argv[:1]}")
-        if any(a.startswith(GIT_FORBIDDEN_ARGS) for a in argv[1:]):
-            raise ValueError("git option not allowed")
+        check_git_args(argv)
         proc = _run(["git", *argv], repo)
         return _truncate(proc.stdout + proc.stderr)
 
@@ -154,11 +174,14 @@ def make_tools(repo: Path, *, write_aa: bool, edit: bool, checks: list[str] | No
     allowed = checks or []
 
     def run_check(command: str) -> str:
-        """Run a test/lint command. Only the project's recorded commands are allowed, optionally with extra
-        arguments appended (e.g. a test file)."""
+        """Run a test/lint command. Only the commands the operator allowed with --check are permitted,
+        optionally with extra arguments appended (e.g. a test file)."""
         argv = shlex.split(command)
         if not any(argv[: len(shlex.split(c))] == shlex.split(c) for c in allowed):
-            raise ValueError(f"command not allowed; allowed: {allowed or 'none recorded'}")
+            raise ValueError(
+                f"command not allowed; allowed: {allowed or 'none (the operator passed no --check)'}. "
+                "Report checks you could not run as manual."
+            )
         try:
             proc = _run(argv, repo, timeout=900)
         except subprocess.TimeoutExpired:

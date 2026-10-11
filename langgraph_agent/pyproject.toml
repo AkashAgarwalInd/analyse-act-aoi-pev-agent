@@ -24,9 +24,9 @@ aa-agent = "aa_agent.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/aa_agent"]
 
-# Stage prompts come from the skill itself, so the two never drift.
-[tool.hatch.build.targets.wheel.force-include]
-"../skills/analyse-act" = "aa_agent/skill"
+# Stage prompts come from the skill itself, so the two never drift. hatch_build.py bundles
+# ../skills/analyse-act into both the sdist and the wheel.
+[tool.hatch.build.hooks.custom]
 
 [tool.ruff]
 line-length = 120

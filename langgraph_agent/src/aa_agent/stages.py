@@ -12,6 +12,7 @@ from .state import AAState
 DEFAULT_MODEL = "claude-sonnet-5-5"
 REFERENCES = {
     "A": ["analyse.md"],
+    "DELTA": ["caching.md"],
     "O": ["observe.md"],
     "I": ["inspect.md"],
     "P": ["plan.md"],
@@ -19,7 +20,10 @@ REFERENCES = {
     "V": ["validate.md"],
     "FIX": ["execute.md", "validate.md"],
 }
-NAMES = {"A": "ANALYSE", "O": "OBSERVE", "I": "INSPECT", "P": "PLAN", "E": "EXECUTE", "V": "VALIDATE", "FIX": "FIX"}
+NAMES = {
+    "DELTA": "DELTA UPDATE", "A": "ANALYSE", "O": "OBSERVE", "I": "INSPECT", "P": "PLAN",
+    "E": "EXECUTE", "V": "VALIDATE", "FIX": "FIX",
+}
 
 HEADLESS = """You are running headless (CI); nobody can answer questions mid-stage.
 - Do only the stage below, then reply with its report (banner, body, stage summary) and stop.
@@ -30,6 +34,8 @@ HEADLESS = """You are running headless (CI); nobody can answer questions mid-sta
 - If [E] would need to drift from the approved plan, stop editing and start the report with DRIFT."""
 
 STAGE_TAIL = {
+    "DELTA": "Cache DELTA: read .aa/context.md and .aa/schema_cache.json, rescan ONLY the changed files listed above "
+    "(drop deleted ones), and patch the affected sections with write_aa_file. Don't rescan anything else.",
     "P": 'End with a ```json block: {"approaches": [{"id": "A", "title": "...", "files": ["..."], '
     '"est_loc": 10, "risk": "Low", "recommended": true}, ...]}',
     "V": 'End with a ```json block: {"passed": true|false} — true only if every check you ran passed.',
@@ -119,9 +125,9 @@ def make_run_stage(model: str = DEFAULT_MODEL, max_steps: int = 40, llm=None):
 
     def run_stage(stage: str, state: AAState) -> dict:
         repo = Path(state["repo"])
-        checks = tools.allowed_checks(repo, state.get("checks", [])) if stage in ("E", "V", "FIX") else None
+        checks = state.get("checks", []) if stage in ("E", "V", "FIX") else None
         stage_tools = tools.make_tools(
-            repo, write_aa=stage in ("A", "O", "I", "P"), edit=stage in ("E", "FIX"), checks=checks
+            repo, write_aa=stage in ("DELTA", "A", "O", "I", "P"), edit=stage in ("E", "FIX"), checks=checks
         )
         text = tool_loop(llm, stage_tools, system_prompt(stage), task_message(stage, state), max_steps)
         result: dict = {"output": text}

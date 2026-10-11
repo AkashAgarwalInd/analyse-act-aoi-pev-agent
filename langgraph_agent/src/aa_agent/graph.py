@@ -1,11 +1,13 @@
 """The AOI-PEV graph.
 
-cache ─HIT→ inspect ─analyse_only→ finish
-  └─else→ analyse → observe ─┘   └→ plan → gate (interrupt) → execute → validate ─pass→ finish
-                                                                   fix (once) ←fail┘
+cache ─HIT──────────────────────→ inspect ─analyse_only→ finish
+  ├─DELTA──→ delta (rescan changed) ─┤        └→ plan ─no approaches→ finish (handed_off)
+  ├─DELTA no-schema-cache → observe ─┤              └→ gate (interrupt) → execute → validate ─pass→ finish
+  └─MISS / --refresh / manifest changed → analyse → observe ┘                fix (once) ←fail┘
 """
 
 from collections.abc import Callable
+from pathlib import PurePosixPath
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -15,8 +17,28 @@ from . import tools
 from .state import AAState
 
 # run_stage(stage, state) -> {"output": str, "approaches": [...] (P only), "passed": bool (V only)}
-# stage is one of A O I P E V, or FIX for the single auto-fix retry after a failed [V].
+# stage is one of A O I P E V, DELTA for a cache-delta rescan, or FIX for the single retry after a failed [V].
 RunStage = Callable[[str, AAState], dict[str, Any]]
+
+# A change to any of these invalidates the stack picture, so DELTA becomes a full rescan (references/caching.md).
+MANIFESTS = {
+    "package.json", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "go.mod", "Cargo.toml",
+    "Gemfile", "pom.xml", "build.gradle", "build.gradle.kts", "composer.json",
+}
+
+
+def route_cache(state: AAState) -> str:
+    cache = state["cache"]
+    status = cache.get("status")
+    if state.get("refresh") or status not in ("HIT", "DELTA"):
+        return "analyse"
+    if status == "HIT":
+        return "inspect"
+    if cache.get("reason") == "no-schema-cache":
+        return "observe"
+    if any(PurePosixPath(f).name in MANIFESTS for f in cache.get("changed", [])):
+        return "analyse"
+    return "delta"
 
 
 def build_graph(
@@ -46,11 +68,18 @@ def build_graph(
         cache_stamp(state["repo"])  # record the scan deterministically, never by the model
         return update
 
+    def delta(state: AAState) -> dict:
+        update = stage("DELTA")(state)
+        cache_stamp(state["repo"])
+        return update
+
     def gate(state: AAState) -> dict:
         ids = [a["id"] for a in state.get("approaches", [])]
+        if not ids:
+            raise ValueError("no approaches to choose from")
         choice = interrupt({"approaches": state.get("approaches", []), "plan": state["outputs"]["P"]})
         choice = str(choice).strip().upper()
-        if ids and choice not in ids:
+        if choice not in ids:
             raise ValueError(f"unknown approach {choice!r}; expected one of {ids}")
         return {"chosen": choice, "stage_log": ["gate"]}
 
@@ -66,6 +95,8 @@ def build_graph(
     def finish(state: AAState) -> dict:
         if state.get("analyse_only"):
             status = "analysed"
+        elif "P" in state.get("outputs", {}) and not state.get("approaches"):
+            return {"status": "handed_off", "note": "[P] produced no parseable approaches; nothing was executed"}
         else:
             status = "done" if state.get("validation_ok") else "handed_off"
         return {"status": status}
@@ -73,6 +104,7 @@ def build_graph(
     g = StateGraph(AAState)
     g.add_node("cache", cache)
     g.add_node("analyse", stage("A"))
+    g.add_node("delta", delta)
     g.add_node("observe", observe)
     g.add_node("inspect", stage("I"))
     g.add_node("plan", stage("P"))
@@ -83,11 +115,12 @@ def build_graph(
     g.add_node("finish", finish)
 
     g.add_edge(START, "cache")
-    g.add_conditional_edges("cache", lambda s: "inspect" if s["cache"].get("status") == "HIT" else "analyse")
+    g.add_conditional_edges("cache", route_cache)
+    g.add_edge("delta", "inspect")
     g.add_edge("analyse", "observe")
     g.add_edge("observe", "inspect")
     g.add_conditional_edges("inspect", lambda s: "finish" if s.get("analyse_only") else "plan")
-    g.add_edge("plan", "gate")
+    g.add_conditional_edges("plan", lambda s: "gate" if s.get("approaches") else "finish")
     g.add_edge("gate", "execute")
     g.add_edge("execute", "validate")
     g.add_conditional_edges(

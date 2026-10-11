@@ -1,10 +1,14 @@
 # Example: run Analyse-Act headlessly from GitHub Actions. Copy to .github/workflows/ in YOUR repo.
 #
 #   1. Run the workflow with a task. It stops at the [P] gate and puts the plan in the job summary.
-#   2. Run it again with the printed thread id and your choice (A, B, …). It executes, validates,
-#      and puts the diff in the job summary. Nothing is committed or pushed.
+#   2. Run it again with the printed thread id and your choice (A, B, …) on the SAME commit. It executes,
+#      validates, puts the diff in the job summary and uploads it as aa-<thread>.patch. Nothing is
+#      committed or pushed; apply the patch locally with `git apply`.
 #
-# Needs an ANTHROPIC_API_KEY repository secret.
+# Needs an ANTHROPIC_API_KEY repository secret. Set CHECKS to your own test/lint commands: they are the
+# only commands the agent may run.
+#
+# Inputs reach the shell only through env vars, never ${{ }} inside run: (script injection).
 name: analyse-act
 
 on:
@@ -25,6 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      TASK: ${{ inputs.task }}
+      THREAD: ${{ inputs.thread }}
+      CHOICE: ${{ inputs.choice }}
+      CHECKS: "npm test"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,7 +52,7 @@ jobs:
         if: inputs.task != ''
         id: run
         run: |
-          aa-agent run "${{ inputs.task }}" --plan-out "$GITHUB_STEP_SUMMARY" | tee out.txt
+          aa-agent run "$TASK" --check "$CHECKS" --plan-out "$GITHUB_STEP_SUMMARY" | tee out.txt
           echo "thread=$(sed -n 's/^status=.* thread=//p' out.txt)" >> "$GITHUB_OUTPUT"
 
       - if: inputs.task != ''
@@ -56,6 +64,27 @@ jobs:
 
       - name: execute + validate
         if: inputs.thread != ''
+        id: resume
         run: |
-          aa-agent resume --thread "${{ inputs.thread }}" --choice "${{ inputs.choice }}"
-          { echo '```diff'; git diff; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # resume refuses if HEAD moved since the plan; it exits 1 on a [V] handoff, so record the
+          # status and still publish the diff below
+          set +e
+          aa-agent resume --thread "$THREAD" --choice "$CHOICE"
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+      - name: publish diff
+        if: inputs.thread != '' && always()
+        run: |
+          git add --intent-to-add -A -- . ':!.aa'
+          git diff -- . ':!.aa' > "aa-$THREAD.patch"
+          { echo '```diff'; cat "aa-$THREAD.patch"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - if: inputs.thread != '' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aa-${{ inputs.thread }}-patch
+          path: aa-${{ inputs.thread }}.patch
+
+      - name: fail if handed off
+        if: inputs.thread != '' && steps.resume.outputs.rc != '0'
+        run: exit 1
