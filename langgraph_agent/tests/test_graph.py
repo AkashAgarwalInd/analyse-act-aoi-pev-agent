@@ -44,7 +44,8 @@ def graph(stub, status="MISS", branches=None, reason="test", changed=(), stamps=
         cache_check=lambda repo: {"status": status, "reason": reason, "changed": list(changed)},
         cache_stamp=lambda repo: stamps.append(repo) if stamps is not None else "abc",
         create_branch=lambda repo, task: branches.append(task) or "aa/x" if branches is not None else "aa/x",
-        diff_stats=lambda repo, exclude: diff,
+        snapshot=lambda repo: {},
+        diff_stats=lambda repo, baseline: diff,
         write_session=lambda state, status: sessions.append(status) if sessions is not None else None,
     )
 
@@ -343,3 +344,41 @@ def test_written_session_matches_the_skill_schema(tmp_path):
         "session_log": [{"stage": "V", "at": "2026-10-11T00:00:00Z", "summary": "ok"}],
     }, "handed_off")
     jsonschema.validate(session.read(str(tmp_path)), schema)
+
+
+def test_fix_is_reviewed_for_drift_too():
+    # [FIX] grows the diff past the tier cap; before, only [E] was reviewed and this ended "done"
+    stub = Stub(validate_results=(False, True))
+    g = build_graph(stub, checkpointer=InMemorySaver(),
+                    cache_check=lambda r: {"status": "HIT", "changed": []}, snapshot=lambda r: {},
+                    diff_stats=lambda r, b: (["a.js", "x", "y", "z"], 900) if "FIX" in stub.calls else (["a.js"], 5),
+                    write_session=lambda s, st: None)
+    g.invoke(start(), CFG)
+    g.invoke(Command(resume="A"), CFG)
+    assert stub.calls[-1] == "FIX" and pause(g)["kind"] == "drift"
+    assert "exceeds tier M cap: 4 files / 900 LOC" in pause(g)["reason"]
+    g.invoke(Command(resume="stop"), CFG)
+    assert g.get_state(CFG).values["status"] == "handed_off" and stub.calls.count("V") == 1
+
+
+def test_approved_drift_is_not_asked_again_after_fix():
+    stub = Stub(validate_results=(False, True))
+    g = graph(stub, status="HIT", diff=(["a.js", "c.js"], 5))
+    g.invoke(start(), CFG)
+    g.invoke(Command(resume="A"), CFG)
+    assert "c.js" in pause(g)["reason"]
+    g.invoke(Command(resume="continue"), CFG)  # same diff after [FIX]: nothing new to ask about
+    assert pause(g) is None and g.get_state(CFG).values["status"] == "done"
+    assert stub.calls[-3:] == ["V", "FIX", "V"]
+
+
+def test_plan_without_files_pauses_instead_of_skipping_the_check():
+    g = run_to_review(Stub(approaches=[{"id": "A", "title": "x", "files": []}]), diff=(["a.js", "b.js"], 5))
+    assert "the plan listed no files" in pause(g)["reason"]
+
+
+def test_cli_refuses_session_whose_plan_was_already_chosen(tmp_path, capsys):
+    session.write({"repo": str(tmp_path), "task": "t", "chosen": "A", "approaches": APPROACHES}, "in_progress")
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "--from-session", *base], run_stage=Stub()) == 2
+    assert "already chosen" in capsys.readouterr().err

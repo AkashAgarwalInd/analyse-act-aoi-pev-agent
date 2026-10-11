@@ -1,14 +1,17 @@
 # Example: run Analyse-Act headlessly from GitHub Actions. Copy to .github/workflows/ in YOUR repo.
 #
-#   1. Run the workflow with a task. It stops at the [P] gate and puts the plan in the job summary.
-#   2. Run it again with the printed thread id and your choice (A, B, …) on the SAME commit. It executes,
-#      validates, puts the diff in the job summary and uploads it as aa-<thread>.patch. Nothing is
-#      committed or pushed; apply the patch locally with `git apply`.
+#   1. Run the workflow with a task. It stops at the [P] gate (or at a budget pause) and the job summary
+#      says what it's waiting for and which inputs to give next.
+#   2. Run it again with the thread id plus either a choice (A, B, …, optionally with an edit) or a
+#      decision (continue / stop) — repeat until it finishes. Always run it on the SAME commit.
 #
-# Needs an ANTHROPIC_API_KEY repository secret. Set CHECKS to your own test/lint commands: they are the
-# only commands the agent may run.
+# Every run saves the checkpoint and the uncommitted edits (.aa/worktree.patch) as artifact aa-<thread>,
+# and the next run restores both, so a run can pause any number of times. The final diff is in the job
+# summary and in artifact aa-<thread>-patch. Nothing is committed or pushed; apply it with `git apply`.
+# A --branch created in one job does not survive into the next; the patch does.
 #
-# Inputs reach the shell only through env vars, never ${{ }} inside run: (script injection).
+# Needs an ANTHROPIC_API_KEY repository secret. Set CHECKS to your own test command: it is the only
+# command the agent may run. Inputs reach the shell only through env vars, never ${{ }} inside run:.
 name: analyse-act
 
 on:
@@ -18,20 +21,31 @@ on:
         description: "Task (start a new run)"
         required: false
       thread:
-        description: "Thread id to resume (from the first run's summary)"
+        description: "Thread id to continue (from the previous run's summary)"
         required: false
       choice:
-        description: "Approach to execute (A, B, …)"
+        description: "At the plan gate: approach to execute (A, B, …)"
+        required: false
+      edit:
+        description: "At the plan gate, optional: your changes to that approach"
+        required: false
+      decision:
+        description: "At a budget or drift pause: continue or stop"
         required: false
 
 jobs:
   analyse-act:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash  # -eo pipefail
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       TASK: ${{ inputs.task }}
       THREAD: ${{ inputs.thread }}
       CHOICE: ${{ inputs.choice }}
+      EDIT: ${{ inputs.edit }}
+      DECISION: ${{ inputs.decision }}
       CHECKS: "npm test"
     steps:
       - uses: actions/checkout@v4
@@ -40,51 +54,57 @@ jobs:
           python-version: "3.12"
       - run: pip install "analyse-act-agent @ git+https://github.com/AkashAgarwalInd/analyse-act-aoi-pev-agent#subdirectory=langgraph_agent"
 
-      # resuming: restore the checkpoint saved by the first run
+      # continuing: restore the checkpoint and the edits saved by the previous run of this thread
       - if: inputs.thread != ''
         uses: dawidd6/action-download-artifact@v6
         with:
           name: aa-${{ inputs.thread }}
           path: .aa
+          search_artifacts: true
           workflow_conclusion: success
+      - if: inputs.thread != ''
+        run: if [ -s .aa/worktree.patch ]; then git apply .aa/worktree.patch; fi
 
-      - name: plan (stops at the [P] gate)
-        if: inputs.task != ''
-        id: run
+      - name: run or resume
+        id: agent
         run: |
-          aa-agent run "$TASK" --check "$CHECKS" --plan-out "$GITHUB_STEP_SUMMARY" | tee out.txt
-          echo "thread=$(sed -n 's/^status=.* thread=//p' out.txt)" >> "$GITHUB_OUTPUT"
+          set +e
+          if [ -n "$TASK" ]; then
+            aa-agent run "$TASK" --check "$CHECKS" --plan-out plan.md | tee out.txt
+          elif [ -n "$DECISION" ]; then
+            aa-agent resume --thread "$THREAD" --decision "$DECISION" --plan-out plan.md | tee out.txt
+          else
+            aa-agent resume --thread "$THREAD" --choice "$CHOICE" --edit "$EDIT" --plan-out plan.md | tee out.txt
+          fi
+          echo "rc=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          thread=$(sed -n 's/^status=.* thread=//p' out.txt | tail -n 1)
+          echo "THREAD=${thread:-$THREAD}" >> "$GITHUB_ENV"
 
-      - if: inputs.task != ''
+      - name: save state and publish
+        if: always() && env.THREAD != ''
+        run: |
+          git add --intent-to-add -A -- . ':!.aa'
+          git diff -- . ':!.aa' > .aa/worktree.patch
+          cp .aa/worktree.patch "aa-$THREAD.patch"
+          {
+            [ -f plan.md ] && cat plan.md
+            echo '```'; tail -n 4 out.txt; echo '```'
+            if [ -s "aa-$THREAD.patch" ]; then echo '```diff'; cat "aa-$THREAD.patch"; echo '```'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - if: always() && env.THREAD != ''
         uses: actions/upload-artifact@v4
         with:
-          name: aa-${{ steps.run.outputs.thread }}
+          name: aa-${{ env.THREAD }}
           path: .aa/
           include-hidden-files: true
 
-      - name: execute + validate
-        if: inputs.thread != ''
-        id: resume
-        run: |
-          # resume refuses if HEAD moved since the plan; it exits 1 on a [V] handoff, so record the
-          # status and still publish the diff below
-          set +e
-          aa-agent resume --thread "$THREAD" --choice "$CHOICE"
-          echo "rc=$?" >> "$GITHUB_OUTPUT"
-
-      - name: publish diff
-        if: inputs.thread != '' && always()
-        run: |
-          git add --intent-to-add -A -- . ':!.aa'
-          git diff -- . ':!.aa' > "aa-$THREAD.patch"
-          { echo '```diff'; cat "aa-$THREAD.patch"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-
-      - if: inputs.thread != '' && always()
+      - if: always() && env.THREAD != ''
         uses: actions/upload-artifact@v4
         with:
-          name: aa-${{ inputs.thread }}-patch
-          path: aa-${{ inputs.thread }}.patch
+          name: aa-${{ env.THREAD }}-patch
+          path: aa-${{ env.THREAD }}.patch
 
-      - name: fail if handed off
-        if: inputs.thread != '' && steps.resume.outputs.rc != '0'
+      # paused runs exit 0; a handoff, a refused resume (HEAD moved, bad input) or a crash fails the job
+      - if: steps.agent.outputs.rc != '0'
         run: exit 1

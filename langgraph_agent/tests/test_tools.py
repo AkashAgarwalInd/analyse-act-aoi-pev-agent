@@ -64,10 +64,27 @@ def test_stage_tool_sets(repo):
 
 def test_write_aa_file_stays_in_aa(repo):
     t = by_name(repo, write_aa=True)["write_aa_file"]
-    t.invoke({"name": "context.md", "content": "ctx"})
+    for name in ("context.md", "context.web-app.md", "schema_cache.json"):
+        t.invoke({"name": name, "content": "ctx"})
     assert (repo / ".aa" / "context.md").read_text() == "ctx"
     with pytest.raises(ValueError):
         t.invoke({"name": "../a.txt", "content": "x"})
+
+
+@pytest.mark.parametrize("name", [
+    "agent.sqlite", "AGENT.sqlite", "cache_meta.json", "dirty_at_scan.txt", "current_session.json",
+    "sessions/x.json", "./cache_meta.json", "sub/context.md", "context.md/../cache_meta.json",
+])
+def test_runner_owned_aa_files_are_not_writable(repo, name):
+    with pytest.raises(ValueError):
+        by_name(repo, write_aa=True)["write_aa_file"].invoke({"name": name, "content": "x"})
+
+
+@pytest.mark.parametrize("path", [".aa/agent.sqlite", ".AA/cache_meta.json", ".aa/context.md", ".GIT/config"])
+def test_execute_cannot_write_aa_or_git(repo, path):
+    t = by_name(repo, edit=True)
+    with pytest.raises(ValueError):
+        t["write_file"].invoke({"path": path, "content": "x"})
 
 
 def test_edit_file_needs_unique_match(repo):
@@ -79,11 +96,19 @@ def test_edit_file_needs_unique_match(repo):
 
 
 def test_run_check_only_allows_operator_commands(repo):
-    t = by_name(repo, checks=["git status", "git --version"])["run_check"]
-    assert t.invoke({"command": "git status --short"}).startswith("exit 0")  # extra args allowed
+    t = by_name(repo, checks=["git status --short", "git --version"])["run_check"]
+    assert t.invoke({"command": "git status --short a.txt"}).startswith("exit 0")  # appended path allowed
+    assert t.invoke({"command": "git status --short -- a.txt"}).startswith("exit 0")
     assert t.invoke({"command": "git --version"}).startswith("exit 0")
     with pytest.raises(ValueError, match="not allowed"):
         t.invoke({"command": "rm -rf ."})
+
+
+@pytest.mark.parametrize("extra", ["--porcelain", "-- --porcelain", "/etc", "../x", "~/x", "-- -- x"])
+def test_run_check_rejects_appended_options_and_outside_paths(repo, extra):
+    # e.g. `pytest --basetemp=<dir>` deletes <dir>; appended arguments may only name tests
+    with pytest.raises(ValueError, match="only test files or names"):
+        by_name(repo, checks=["git status"])["run_check"].invoke({"command": f"git status {extra}"})
 
 
 def test_model_cannot_grant_itself_a_command(repo):
@@ -134,5 +159,28 @@ def test_diff_stats_counts_tracked_and_untracked(repo):
     (repo / "new.txt").write_text("x\ny\n")
     (repo / ".aa").mkdir()
     (repo / ".aa" / "context.md").write_text("ignored\n")
-    assert tools.diff_stats(str(repo), []) == (["a.txt", "new.txt"], 5)
-    assert tools.diff_stats(str(repo), ["new.txt"]) == (["a.txt"], 3)
+    assert tools.diff_stats(str(repo), {}) == (["a.txt", "new.txt"], 5)
+
+
+def test_diff_stats_measures_edits_to_already_dirty_files(repo):
+    (repo / "a.txt").write_text("one\ntwo\nlocal\n")  # dirty before [E]
+    (repo / "keep.txt").write_text("untouched\n")
+    baseline = tools.snapshot_dirty(str(repo))
+    assert set(baseline) == {"a.txt", "keep.txt"}
+    assert tools.diff_stats(str(repo), baseline) == ([], 0)  # [E] did nothing yet
+    (repo / "a.txt").write_text("one\ntwo\nlocal\n" + "x\n" * 500)
+    assert tools.diff_stats(str(repo), baseline) == (["a.txt"], 500)
+    (repo / "keep.txt").unlink()
+    assert tools.diff_stats(str(repo), baseline) == (["a.txt", "keep.txt"], 501)
+
+
+def test_diff_stats_counts_reverting_a_dirty_file(repo):
+    (repo / "a.txt").write_text("one\ntwo\nlocal\n")
+    baseline = tools.snapshot_dirty(str(repo))
+    subprocess.run(["git", "checkout", "-q", "a.txt"], cwd=repo, check=True)
+    assert tools.diff_stats(str(repo), baseline) == (["a.txt"], 1)
+
+
+def test_diff_stats_is_conservative_when_baseline_blob_is_missing(repo):
+    (repo / "a.txt").write_text("one\ntwo\n" + "x\n" * 300)
+    assert tools.diff_stats(str(repo), {"a.txt": "0" * 40}) == (["a.txt"], 302)

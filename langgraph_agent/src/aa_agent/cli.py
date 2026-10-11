@@ -98,6 +98,11 @@ def _seed_from_session(graph, config, args) -> int | None:
         return _fail(f"no .aa/current_session.json with approaches in {repo}")
     if data.get("status") not in (None, "in_progress", "awaiting_approval"):
         return _fail(f"session status is {data['status']!r}; only a session waiting at [P] can be continued")
+    if data.get("chosen"):
+        return _fail(
+            f"approach {data['chosen']!r} was already chosen in that session and may have been executed; "
+            "check the working tree, then finish it with the skill (/analyse-act --from E) instead"
+        )
     if args.task and args.task != data["task"]:
         return _fail(f"session is for {data['task']!r}, not {args.task!r}")
     args.task = data["task"]

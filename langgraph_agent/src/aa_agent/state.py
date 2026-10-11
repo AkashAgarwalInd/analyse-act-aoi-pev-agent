@@ -35,7 +35,8 @@ class AAState(TypedDict, total=False):
     last_stage: str  # the stage `budget` is checking
     session_log: Annotated[list[dict[str, str]], operator.add]  # stage_log for .aa/current_session.json
     drift_reported: bool  # [E]/[FIX] said it needed something outside the plan
-    baseline_dirty: list[str]  # files already changed before [E]
+    baseline_dirty: dict[str, str]  # file -> blob id, for files already changed before [E]
+    drift_ok: list[str]  # drift reasons the human already let through
     diff_files: list[str]
     diff_loc: int
     status: str  # analysed | done | handed_off

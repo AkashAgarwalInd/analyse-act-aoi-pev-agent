@@ -86,25 +86,71 @@ def git_head(repo: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def diff_stats(repo: str, exclude: list[str]) -> tuple[list[str], int]:
-    """Files changed vs HEAD (tracked and untracked, minus .aa/ and `exclude`) and their LOC.
+def _changed(root: Path) -> dict[str, int]:
+    """Files changed vs HEAD (tracked and untracked, minus .aa/) -> LOC, where LOC per file is
+    max(added, deleted): a rewrite counts its size and a pure deletion isn't free."""
+    spec = ["--", ".", ":(exclude).aa"]
+    stats: dict[str, int] = {}
+    out = _run(["git", "diff", "--numstat", "-z", "--no-renames", "HEAD", *spec], root).stdout
+    for record in filter(None, out.split("\0")):
+        path = record.split("\t", 2)[2]
+        stats[path] = _numstat_loc(record)
+    out = _run(["git", "ls-files", "-z", "--others", "--exclude-standard", *spec], root).stdout
+    for path in filter(None, out.split("\0")):
+        stats[path] = _lines(root / path)
+    return stats
 
-    LOC per file is max(added, deleted), so a rewrite counts its size and a pure deletion isn't free."""
+
+def _numstat_loc(record: str) -> int:
+    """max(added, deleted) from one numstat record; binary files ("-") count 0."""
+    added, deleted = (record.split("\t") + ["", ""])[:2]
+    return max(int(added) if added.isdigit() else 0, int(deleted) if deleted.isdigit() else 0)
+
+
+def _lines(file: Path) -> int:
+    try:
+        return len(file.read_text(errors="replace").splitlines())
+    except OSError:
+        return 0
+
+
+def _blob(root: Path, path: str) -> str:
+    """Store the file's current content in git's object database (never committed); "" if it doesn't exist."""
+    if not (root / path).is_file():
+        return ""
+    return _run(["git", "hash-object", "-w", "--", path], root).stdout.strip()
+
+
+def snapshot_dirty(repo: str) -> dict[str, str]:
+    """Blob ids of the files already changed before [E], so [E]'s own edits to them can still be measured."""
+    root = Path(repo)
+    if not git_head(repo):
+        return {}
+    return {path: _blob(root, path) for path in _changed(root)}
+
+
+def diff_stats(repo: str, baseline: dict[str, str]) -> tuple[list[str], int]:
+    """Files [E] changed and their LOC: changes vs HEAD, except that a file in `baseline` (dirty before [E])
+    is measured against its baseline content instead, and left out only if [E] didn't touch it."""
     root = Path(repo)
     if not git_head(repo):
         return [], 0
-    spec = ["--", ".", ":(exclude).aa"]
-    stats: dict[str, int] = {}
-    for line in _run(["git", "diff", "--numstat", "--no-renames", "HEAD", *spec], root).stdout.splitlines():
-        added, deleted, path = line.split("\t", 2)
-        stats[path] = max(int(added) if added.isdigit() else 0, int(deleted) if deleted.isdigit() else 0)
-    for path in _run(["git", "ls-files", "--others", "--exclude-standard", *spec], root).stdout.splitlines():
-        try:
-            stats[path] = len((root / path).read_text(errors="replace").splitlines())
-        except OSError:
-            stats[path] = 0
-    skip = set(exclude)
-    files = sorted(p for p in stats if p not in skip)
+    stats = _changed(root)
+    for path, old in baseline.items():
+        new = _blob(root, path)
+        if old and _run(["git", "cat-file", "-e", old], root).returncode != 0:
+            # baseline content isn't in this clone (e.g. a later CI job): count the whole file, never 0
+            stats[path] = _lines(root / path)
+            continue
+        if new == old:
+            stats.pop(path, None)
+        elif old and new:
+            stats[path] = _numstat_loc(_run(["git", "diff", "--numstat", old, new], root).stdout)
+        elif new:
+            stats[path] = _lines(root / path)
+        else:  # [E] deleted a file that was dirty before
+            stats[path] = len(_run(["git", "cat-file", "-p", old], root).stdout.splitlines())
+    files = sorted(stats)
     return files, sum(stats[p] for p in files)
 
 
@@ -117,9 +163,19 @@ def safe_path(repo: Path, rel: str) -> Path:
     target = (root / rel).resolve()
     if target != root and root not in target.parents:
         raise ValueError(f"path outside the repo: {rel}")
-    if ".git" in target.relative_to(root).parts:
+    if ".git" in (part.lower() for part in target.relative_to(root).parts):  # macOS paths ignore case
         raise ValueError(f"path inside .git: {rel}")
     return target
+
+
+# The only .aa/ files the model writes. Everything else there (cache_meta.json, dirty_at_scan.txt,
+# current_session.json, sessions/, agent.sqlite) belongs to the runner.
+AA_MODEL_FILES = re.compile(r"context(\.[A-Za-z0-9_-]+)?\.md|schema_cache\.json")
+
+
+def in_aa(repo: Path, target: Path) -> bool:
+    rel = target.relative_to(repo.resolve()).parts
+    return bool(rel) and rel[0].lower() == ".aa"
 
 
 def check_git_args(argv: list[str]) -> None:
@@ -169,10 +225,10 @@ def make_tools(repo: Path, *, write_aa: bool, edit: bool, checks: list[str] | No
         return _truncate(proc.stdout + proc.stderr)
 
     def write_aa_file(name: str, content: str) -> str:
-        """Write a file under .aa/ (e.g. "context.md", "schema_cache.json"). Never write secret values."""
+        """Write .aa/context.md, .aa/context.<package>.md or .aa/schema_cache.json. Never write secret values."""
         target = safe_path(repo, f".aa/{name}")
-        if (repo.resolve() / ".aa") not in target.parents:
-            raise ValueError(f"not under .aa/: {name}")
+        if target.parent != repo.resolve() / ".aa" or not AA_MODEL_FILES.fullmatch(target.name):
+            raise ValueError(f"only context.md, context.<package>.md and schema_cache.json can be written: {name}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
         return f"wrote .aa/{name}"
@@ -180,6 +236,8 @@ def make_tools(repo: Path, *, write_aa: bool, edit: bool, checks: list[str] | No
     def edit_file(path: str, old: str, new: str) -> str:
         """Replace the single exact occurrence of `old` with `new` in a file."""
         target = safe_path(repo, path)
+        if in_aa(repo, target):
+            raise ValueError(".aa/ is not editable in this stage")
         text = target.read_text()
         if text.count(old) != 1:
             raise ValueError(f"`old` occurs {text.count(old)} times in {path}; it must occur exactly once")
@@ -189,6 +247,8 @@ def make_tools(repo: Path, *, write_aa: bool, edit: bool, checks: list[str] | No
     def write_file(path: str, content: str) -> str:
         """Create or overwrite a file with `content`."""
         target = safe_path(repo, path)
+        if in_aa(repo, target):
+            raise ValueError(".aa/ is not editable in this stage")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
         return f"wrote {path}"
@@ -196,10 +256,17 @@ def make_tools(repo: Path, *, write_aa: bool, edit: bool, checks: list[str] | No
     allowed = checks or []
 
     def run_check(command: str) -> str:
-        """Run a test/lint command. Only the commands the operator allowed with --check are permitted,
-        optionally with extra arguments appended (e.g. a test file)."""
+        """Run a test/lint command. Only the commands the operator allowed with --check are permitted. You may
+        append test files or test names (not options), optionally after a single "--"."""
         argv = shlex.split(command)
-        if not any(argv[: len(shlex.split(c))] == shlex.split(c) for c in allowed):
+        base = next((shlex.split(c) for c in allowed if argv[: len(shlex.split(c))] == shlex.split(c)), None)
+        extra = argv[len(base):] if base is not None else []
+        if base is not None and extra[:1] == ["--"]:
+            extra = extra[1:]
+        bad = [a for a in extra if a.startswith(("-", "/", "~")) or ".." in a.split("/")]
+        if base is not None and bad:
+            raise ValueError(f"only test files or names can be appended, not options or outside paths: {bad}")
+        if base is None:
             raise ValueError(
                 f"command not allowed; allowed: {allowed or 'none (the operator passed no --check)'}. "
                 "Report checks you could not run as manual."

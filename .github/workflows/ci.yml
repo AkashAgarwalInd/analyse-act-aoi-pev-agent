@@ -8,6 +8,10 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # "shell: bash" means bash -eo pipefail; the default (bash -e) lets `cmd | tee` hide cmd's failure
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -18,7 +22,7 @@ jobs:
         run: |
           pipx install check-jsonschema
           sh tests/aa-cache.test.sh | tee out.txt
-          ! grep -q '^skip' out.txt
+          if grep -q '^skip' out.txt; then echo "a check was skipped"; exit 1; fi
 
       - name: validate sample .aa files against schemas
         run: |
@@ -29,7 +33,8 @@ jobs:
       - name: adapters in sync with adapters/src/workflow.md
         run: |
           sh scripts/build-adapters.sh
-          git status --porcelain adapters/ | tee /dev/stderr | (! grep -q .)
+          changes=$(git status --porcelain adapters/)
+          if [ -n "$changes" ]; then echo "$changes"; echo "adapters/ is stale: run sh scripts/build-adapters.sh"; exit 1; fi
 
       - name: plugin manifest
         run: |
@@ -40,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: langgraph_agent
     steps:
       - uses: actions/checkout@v4

@@ -41,7 +41,9 @@ STAGE_TAIL = {
     "I": 'End with a ```json block: {"tier": "S"|"M"|"L"}',
     "E": 'End with a ```json block: {"drift": true|false}',
     "P": 'End with a ```json block: {"approaches": [{"id": "A", "title": "...", "files": ["..."], '
-    '"est_loc": 10, "risk": "Low", "recommended": true}, ...]}',
+    '"est_loc": 10, "risk": "Low", "recommended": true, "exceeds_cap": false}, ...]}. "files" must list every '
+    "repo-relative file the approach changes or creates, test files included: after [E] the runner pauses for "
+    "any changed file that isn't listed.",
     "V": 'End with a ```json block: {"passed": true|false} — true only if every check you ran passed.',
     "FIX": "[V] failed. Fix the failure once if your change caused it, re-run the failing check, then report. "
     "If the failure is environmental, change nothing and say so.",

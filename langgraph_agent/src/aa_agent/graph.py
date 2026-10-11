@@ -3,7 +3,7 @@
 cache ─HIT──────────────────────→ inspect ─analyse_only→ finish
   ├─DELTA──→ delta (rescan changed) ─┤        └→ plan ─no approaches→ finish (handed_off)
   ├─DELTA no-schema-cache → observe ─┤              └→ gate ⏸ → execute → review ⏸ → validate ─pass→ finish
-  └─MISS / --refresh / manifest changed → analyse → observe ┘                     fix (once) ←fail┘
+  └─MISS / --refresh / manifest changed → analyse → observe ┘      review ⏸ ← fix (once) ←fail┘
 
 Every LLM stage goes through `budget` (⏸ if the stage ran over 1.5× its token budget) before its next stage.
 ⏸ = interrupt(): the run stops and `aa-agent resume` continues it. Pause nodes are deterministic, because
@@ -75,8 +75,9 @@ def drift_reasons(state: AAState, files: list[str], loc: int) -> list[str]:
         reasons.append("[E] reported DRIFT: it needed something the plan didn't cover")
     approach = next((a for a in state.get("approaches", []) if a.get("id") == state.get("chosen")), {})
     planned = set(approach.get("files") or [])
-    unplanned = sorted(set(files) - planned) if planned else []
-    if unplanned:
+    if not planned and files:
+        reasons.append(f"the plan listed no files, so these can't be checked against it: {', '.join(files)}")
+    elif unplanned := sorted(set(files) - planned):
         reasons.append(f"files not in the plan: {', '.join(unplanned)}")
     est = approach.get("est_loc")
     if isinstance(est, int) and est > 0 and loc > OVER * est:
@@ -95,7 +96,8 @@ def build_graph(
     cache_check: Callable[[str], dict] = tools.cache_check,
     cache_stamp: Callable[[str], str] = tools.cache_stamp,
     create_branch: Callable[[str, str], str] = tools.create_branch,
-    diff_stats: Callable[[str, list[str]], tuple[list[str], int]] = tools.diff_stats,
+    snapshot: Callable[[str], dict[str, str]] = tools.snapshot_dirty,
+    diff_stats: Callable[[str, dict[str, str]], tuple[list[str], int]] = tools.diff_stats,
     write_session: Callable[[AAState, str], None] = session.write,
 ):
     def cache(state: AAState) -> dict:
@@ -155,11 +157,9 @@ def build_graph(
             return "finish" if state.get("analyse_only") else "plan"
         if letter == "P":
             return "gate" if state.get("approaches") else "finish"
-        if letter == "E":
-            return "review"
         if letter == "V":
             return "finish" if state.get("validation_ok") or state.get("retry_used") else "fix"
-        return "validate"  # FIX
+        return "review"  # E and FIX: check the diff against the plan before validating
 
     def gate(state: AAState) -> dict:
         ids = [a["id"] for a in state.get("approaches", [])]
@@ -177,20 +177,21 @@ def build_graph(
 
     def execute(state: AAState) -> dict:
         branch = {"branch_name": create_branch(state["repo"], state["task"])} if state.get("branch") else {}
-        baseline, _ = diff_stats(state["repo"], [])  # files already dirty before [E] aren't [E]'s doing
+        baseline = snapshot(state["repo"])  # dirty before [E]: measured against this content, not HEAD
         update = stage("E")({**state, **branch})
         return {**update, **branch, "baseline_dirty": baseline}
 
     def review(state: AAState) -> dict:
-        files, loc = diff_stats(state["repo"], state.get("baseline_dirty", []))
-        reasons = drift_reasons(state, files, loc)
+        files, loc = diff_stats(state["repo"], state.get("baseline_dirty", {}))
+        approved = state.get("drift_ok", [])
+        reasons = [r for r in drift_reasons(state, files, loc) if r not in approved]  # don't re-ask after [FIX]
         stats = {"diff_files": files, "diff_loc": loc}
         if not reasons:
             return stats
         answer = interrupt({"kind": "drift", "reason": "; ".join(reasons), "options": ["continue", "stop"]})
         if answer != "continue":
             return {**stats, "status": "handed_off", "note": f"stopped at drift review: {'; '.join(reasons)}"}
-        return stats
+        return {**stats, "drift_ok": [*approved, *reasons]}
 
     def fix(state: AAState) -> dict:
         return {**stage("FIX")(state), "retry_used": True}
