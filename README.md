@@ -97,7 +97,7 @@ Created in **your** repo, at its root.
 | `current_session.json` | State of the current task, used for resuming | No. Add it to `.gitignore` |
 | `sessions/` | Archived sessions from earlier tasks | No. Add it to `.gitignore` |
 
-Cache status comes from [`aa-cache.sh`](skills/analyse-act/scripts/aa-cache.sh), which needs only POSIX `sh` and git:
+Cache status comes from [`aa-cache.sh`](skills/analyse-act/scripts/aa-cache.sh), which needs only POSIX `sh` and git. After a scan, `aa-cache.sh --stamp` writes `cache_meta.json` and `dirty_at_scan.txt`, so the hash and timestamp come from git and the clock, not from the model:
 - **HIT**: nothing changed, so Analyse and Observe are skipped.
 - **DELTA**: 5 or fewer files changed, so only those files are rescanned.
 - **MISS**: a full scan runs.
@@ -112,7 +112,7 @@ skills/analyse-act/
   SKILL.md               entry point (flow, gates, tiers, rules)
   references/            per-stage instructions, loaded only when that stage runs
   schemas/               JSON schemas for .aa/ files
-  scripts/aa-cache.sh    cache status check
+  scripts/aa-cache.sh    cache status check (--stamp records a scan)
 adapters/                Codex + Cursor versions, generated from adapters/src/workflow.md
 scripts/build-adapters.sh  regenerates adapters/ (CI fails on drift)
 tests/                   cache-script tests, e2e smoke test, fixture repo

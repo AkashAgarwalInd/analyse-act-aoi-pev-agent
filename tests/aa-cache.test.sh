@@ -67,5 +67,30 @@ rm "sp ace.txt"
 sed 's/"git_commit_hash": "[^"]*"/"git_commit_hash": "deadbeef"/' .aa/cache_meta.json > m && mv m .aa/cache_meta.json
 expect "unknown cached commit" MISS cached-commit-not-found
 
+# --stamp
+# check_stamp <name> <condition>
+check_stamp() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+
+out=$(sh "$script" --stamp "$repo")
+check_stamp "stamp prints HEAD" '[ "$out" = "stamped=$(git rev-parse HEAD)" ]'
+expect "stamp then check" HIT up-to-date 0
+
+echo w >> f4.txt
+sh "$script" --stamp "$repo" >/dev/null
+check_stamp "stamp records dirty file" '[ "$(cat .aa/dirty_at_scan.txt)" = f4.txt ]'
+check_stamp "stamp records delta" 'grep -q "\"modified_files_delta\": \[\"f4.txt\"\]" .aa/cache_meta.json'
+git checkout -q f4.txt
+expect "reverted dirty file still rescanned" DELTA 1-files-changed 1
+
+if command -v check-jsonschema >/dev/null 2>&1; then
+  check_stamp "stamped meta matches schema" \
+    'check-jsonschema -q --schemafile "$root/skills/analyse-act/schemas/cache_meta.schema.json" .aa/cache_meta.json'
+fi
+
+repo="$work/plain"
+out=$(sh "$script" --stamp "$repo")
+check_stamp "stamp outside git" '[ "$out" = stamped=none ] && grep -q "\"git_commit_hash\": \"none\"" "$repo/.aa/cache_meta.json"'
+expect "stamped non-git dir still MISS" MISS not-a-git-repo
+
 if [ "$fails" -ne 0 ]; then echo "$fails failed"; exit 1; fi
 echo "all passed"

@@ -50,6 +50,8 @@ It prints `status=HIT|DELTA|MISS`, `reason=`, `head=`, `cached=`, and `changed=<
 
 `--refresh` forces MISS.
 
+After any scan ([A]/[O] or a DELTA patch), record it with `sh "${CLAUDE_SKILL_DIR}/scripts/aa-cache.sh" --stamp .` — never hand-write `cache_meta.json` or `dirty_at_scan.txt`.
+
 ## Session (`.aa/current_session.json`)
 
 - **New task** (no `--from`): if a session file exists for a different task, move it to `.aa/sessions/<YYYYMMDD-HHMMSS>.json`, then start a fresh one.
