@@ -1,0 +1,61 @@
+# Example: run Analyse-Act headlessly from GitHub Actions. Copy to .github/workflows/ in YOUR repo.
+#
+#   1. Run the workflow with a task. It stops at the [P] gate and puts the plan in the job summary.
+#   2. Run it again with the printed thread id and your choice (A, B, …). It executes, validates,
+#      and puts the diff in the job summary. Nothing is committed or pushed.
+#
+# Needs an ANTHROPIC_API_KEY repository secret.
+name: analyse-act
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Task (start a new run)"
+        required: false
+      thread:
+        description: "Thread id to resume (from the first run's summary)"
+        required: false
+      choice:
+        description: "Approach to execute (A, B, …)"
+        required: false
+
+jobs:
+  analyse-act:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "analyse-act-agent @ git+https://github.com/AkashAgarwalInd/analyse-act-aoi-pev-agent#subdirectory=langgraph_agent"
+
+      # resuming: restore the checkpoint saved by the first run
+      - if: inputs.thread != ''
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: aa-${{ inputs.thread }}
+          path: .aa
+          workflow_conclusion: success
+
+      - name: plan (stops at the [P] gate)
+        if: inputs.task != ''
+        id: run
+        run: |
+          aa-agent run "${{ inputs.task }}" --plan-out "$GITHUB_STEP_SUMMARY" | tee out.txt
+          echo "thread=$(sed -n 's/^status=.* thread=//p' out.txt)" >> "$GITHUB_OUTPUT"
+
+      - if: inputs.task != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: aa-${{ steps.run.outputs.thread }}
+          path: .aa/
+          include-hidden-files: true
+
+      - name: execute + validate
+        if: inputs.thread != ''
+        run: |
+          aa-agent resume --thread "${{ inputs.thread }}" --choice "${{ inputs.choice }}"
+          { echo '```diff'; git diff; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

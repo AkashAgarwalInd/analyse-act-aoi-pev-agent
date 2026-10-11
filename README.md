@@ -85,7 +85,25 @@ The examples use the manual-install name; with the plugin, write `/analyse-act:a
 
 See a full sample run in [docs/examples/bug-fix-walkthrough.md](docs/examples/bug-fix-walkthrough.md).
 
-## Complexity tiers
+## Headless / CI (LangGraph)
+
+[`langgraph_agent/`](langgraph_agent) is a headless runner built on LangGraph. Its stage prompts are this skill's own reference files, which are bundled into the package. A run checkpoints after every stage to `.aa/agent.sqlite`, and the [P] gate is a LangGraph `interrupt()`, so the approval can come from a later CI job.
+
+```sh
+pip install "analyse-act-agent @ git+https://github.com/AkashAgarwalInd/analyse-act-aoi-pev-agent#subdirectory=langgraph_agent"
+export ANTHROPIC_API_KEY=...
+aa-agent run "users get logged out a minute early" --plan-out plan.md   # stops at [P]
+aa-agent resume --thread users-get-logged-out-a-minute-early --choice A  # [E] then [V]
+aa-agent status --thread users-get-logged-out-a-minute-early
+```
+
+- The agent's tools are confined to the repo. The model can only write under `.aa/` until [E], git access is read-only, and `run_check` runs only the test command recorded in `.aa/schema_cache.json` plus any `--check "<cmd>"` you pass.
+- The runner never commits or pushes. `--branch` creates `aa/<task-slug>` before [E].
+- [V] gets one auto-fix retry. If it still fails, the run ends with `status=handed_off` and exit code 1.
+- [docs/examples/github-actions.yml](docs/examples/github-actions.yml) is a two-dispatch example: one dispatch plans, and the other approves and executes.
+- Add `.aa/agent.sqlite` to `.gitignore`.
+
+
 
 | Tier | Max files | Max net LOC | Token budget (guide) | Time (guide) | Notes |
 |---|---|---|---|---|---|
@@ -129,7 +147,8 @@ skills/analyse-act/
 adapters/                Codex, Cursor, Copilot + Aider versions, generated from adapters/src/workflow.md
 scripts/build-adapters.sh  regenerates adapters/ (CI fails on drift)
 tests/                   cache-script tests, e2e smoke test, fixture repo
-docs/examples/           sample walkthrough + sample .aa/ files
+langgraph_agent/         headless LangGraph runner (aa-agent CLI) for CI
+docs/examples/           sample walkthrough, sample .aa/ files, GitHub Actions example
 ```
 
 ## Development
@@ -137,12 +156,12 @@ docs/examples/           sample walkthrough + sample .aa/ files
 ```sh
 sh tests/aa-cache.test.sh     # cache script tests (fast, no LLM)
 sh scripts/build-adapters.sh  # after editing adapters/src/workflow.md
-sh tests/e2e-smoke.sh         # runs the real skill headlessly twice; costs tokens
+sh tests/e2e-smoke.sh         # runs the real skill headlessly 3 times; costs tokens
+(cd langgraph_agent && pip install -e '.[dev]' && ruff check . && pytest -q)  # runner tests, no LLM
 ```
 
 ## Roadmap
 
-- **v2:** an optional headless runner (LangGraph state graph with `interrupt()` at the Plan gate) for CI and batch use.
 - Measured token and latency comparisons with and without the cache.
 - A `claude plugin eval` suite. This is blocked for now: the eval sandbox can't run git on macOS, and the skill needs it.
 
