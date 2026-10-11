@@ -391,6 +391,7 @@ def test_cli_interactive_quit_leaves_the_thread_paused(tmp_path, monkeypatch, ca
 def test_cli_interactive_is_off_without_a_terminal(tmp_path, monkeypatch, capsys):
     hit_cache(monkeypatch)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    monkeypatch.delenv("CI", raising=False)
     base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
     assert cli.main(["run", "t", "-i", *base], run_stage=Stub()) == 0
     captured = capsys.readouterr()
