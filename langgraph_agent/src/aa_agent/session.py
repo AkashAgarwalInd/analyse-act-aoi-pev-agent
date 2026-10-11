@@ -1,6 +1,7 @@
 """`.aa/current_session.json` (skills/analyse-act/schemas/session.schema.json), shared with the interactive skill.
 
-The runner writes it at the [P] gate and at the end, so `/analyse-act --from E` can pick up a headless run.
+The runner writes it at guided stage pauses, at the [P] gate and at the end, so `/analyse-act --from <stage>`
+can pick up a headless run.
 Notes from --guided pauses go on the stage_log entry of the stage they followed, as the skill writes them.
 `aa-agent run --from-session` goes the other way and starts at the [P] gate from a session the skill wrote.
 """

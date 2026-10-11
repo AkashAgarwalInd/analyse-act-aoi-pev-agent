@@ -40,7 +40,7 @@ class Stub:
 
 
 def graph(stub, status="MISS", branches=None, reason="test", changed=(), stamps=None, diff=(["a.js"], 5),
-          sessions=None):
+          sessions=None, cached_notes=None):
     return build_graph(
         stub,
         checkpointer=InMemorySaver(),
@@ -50,6 +50,7 @@ def graph(stub, status="MISS", branches=None, reason="test", changed=(), stamps=
         snapshot=lambda repo: {},
         diff_stats=lambda repo, baseline: diff,
         write_session=lambda state, status: sessions.append(status) if sessions is not None else None,
+        cache_note=lambda repo, stage, note: cached_notes.append((stage, note)) if cached_notes is not None else None,
     )
 
 
@@ -712,6 +713,30 @@ def test_guided_note_reaches_the_later_stages():
     assert stub.states["E"]["notes"] == [{"stage": "I", "note": "the bug is in refresh"}]
 
 
+def test_guided_notes_on_cached_stages_go_into_the_cache():
+    cached = []
+    g = graph(Stub(), status="DELTA", reason="1-files-changed", changed=("src/a.js",), cached_notes=cached)
+    g.invoke(start(guided=True), CFG)
+    stage_pauses(g, {"decision": "continue", "note": "auth is in services/"},
+                 {"decision": "continue", "note": "the bug is in refresh"})
+    assert cached == [("O", "auth is in services/")]  # [I] isn't cached, so its note stays in the session only
+
+
+def test_guided_pause_writes_the_session_with_its_notes():
+    written = []
+    g = build_graph(
+        Stub(), checkpointer=InMemorySaver(),
+        cache_check=lambda repo: {"status": "MISS", "changed": []}, cache_stamp=lambda repo: "abc",
+        write_session=lambda state, status: written.append((status, list(state.get("notes", [])))),
+        cache_note=lambda repo, stage, note: None,
+    )
+    g.invoke(start(guided=True), CFG)
+    assert written == [("in_progress", [])]  # paused after [A]: the skill can continue from here
+    stage_pauses(g, {"decision": "continue", "note": "focus on auth"})
+    note = [{"stage": "A", "note": "focus on auth"}]
+    assert written[1:] == [("in_progress", []), ("in_progress", note), ("in_progress", note)]  # re-run, note, [O]
+
+
 def test_guided_stop_hands_off_before_planning():
     stub = Stub()
     g = graph(stub)
@@ -792,3 +817,29 @@ def test_guided_notes_round_trip_through_the_session(tmp_path, monkeypatch, caps
     log = session.read(str(tmp_path))["stage_log"]
     assert [(e["stage"], e.get("note")) for e in log] == [
         ("O", "auth only"), ("I", "refresh path"), ("P", None), ("E", None), ("V", None)]
+
+
+def test_cli_status_and_interactive_resume_show_the_stage_being_reviewed(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "--guided", *base], run_stage=stub) == 0
+    capsys.readouterr()
+    assert cli.main(["status", "--thread", "t", *base]) == 0
+    assert "━━ [I] INSPECT ━━\n━━ [I] ━━\nI report" in capsys.readouterr().out
+    assert cli.main(["resume", "--thread", "t", "-i", *base], run_stage=stub, ask=answers("q")) == 0
+    assert "━━ [I] INSPECT ━━\n━━ [I] ━━\nI report" in capsys.readouterr().out
+
+
+def test_cli_guided_pause_writes_the_session_and_caches_the_note(tmp_path, monkeypatch, capsys):
+    real = cli.build_graph
+    monkeypatch.setattr(cli, "build_graph", lambda rs, checkpointer: real(
+        rs, checkpointer, cache_check=lambda r: {"status": "MISS", "changed": []}, cache_stamp=lambda r: "abc"))
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "--guided", *base], run_stage=Stub()) == 0
+    assert session.read(str(tmp_path))["status"] == "in_progress"
+    assert cli.main(["resume", "--thread", "t", "--note", "auth lives in services/", *base], run_stage=Stub()) == 0
+    data = session.read(str(tmp_path))
+    assert [(e["stage"], e.get("note")) for e in data["stage_log"]] == [("A", "auth lives in services/"), ("O", None)]
+    context = (tmp_path / ".aa" / "context.md").read_text()
+    assert context.endswith("## Human corrections\n- after [A]: auth lives in services/\n")

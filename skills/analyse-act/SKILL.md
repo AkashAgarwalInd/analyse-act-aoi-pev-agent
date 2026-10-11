@@ -60,9 +60,9 @@ After any scan ([A]/[O] or a DELTA patch), record it with `sh "${CLAUDE_SKILL_DI
 ## Session (`.aa/current_session.json`)
 
 - **New task** (no `--from`): if a session file exists for a different task, move it to `.aa/sessions/<YYYYMMDD-HHMMSS>.json`, then start a fresh one.
-- **`--from <stage>`**: load the session. If it is missing, or its `task` doesn't match the one given, say so and ask whether to start over from [I] — never execute a plan recorded for another task.
+- **`--from <stage>`**: load the session. If it is missing, or its `task` doesn't match the one given, say so and ask whether to start over from [I] — never execute a plan recorded for another task. Read every `note` on its `stage_log` entries (from guided pauses, yours or `aa-agent`'s): they are the human's corrections and override the earlier findings in every stage you run.
 - Append to `stage_log` at the end of each stage (schema: `schemas/session.schema.json`).
-- The headless runner (`aa-agent`) reads and writes the same file. A session it left at `awaiting_approval` can be continued here with `--from P`, and `aa-agent run --from-session` continues one you left at the [P] gate.
+- The headless runner (`aa-agent`) reads and writes the same file. It writes it at each guided stage pause too, so a run stopped there can be continued here with `--from <next stage>`. A session it left at `awaiting_approval` can be continued here with `--from P`, and `aa-agent run --from-session` continues one you left at the [P] gate.
 - Get every timestamp (session archive names, `at`, `last_updated`) from the clock: `date -u +%Y%m%d-%H%M%S` for file names, `date -u +%Y-%m-%dT%H:%M:%SZ` for JSON fields. Never invent times.
 
 ## Tier pre-assessment (right after Stage 0)
@@ -99,7 +99,7 @@ Always print the text first: the full report and the usual reply line (`Reply A 
 | Over budget | `Budget` | `Continue`, `Stop` | stage, tokens used vs budget |
 | Stage (`--guided`) | `Stage` | `Continue`, `Stop` | the stage summary |
 
-An option means the same as the typed reply (`A`, `y`, `full`, `continue`, `stop`). Free text ("Other") at [P] that is just an approach id (`C`, `b`) chooses that approach, including one beyond the four shown. Any other free text is a plan edit: record it as `plan_edit`, choose the approach it names (else the recommended one), and echo the edited approach in one line before [E]. If an edit adds files, LOC or a dependency the approach didn't have, show the changed approach and ask again instead of executing. At a guided stage gate, free text other than `continue`/`stop` is context: record it as `note` on that stage's `stage_log` entry, treat it as a correction that overrides your earlier findings from the next stage on, and continue. Free text at any other gate is read as a typed reply. Clicking is approval for rule 1; nothing changes before it.
+An option means the same as the typed reply (`A`, `y`, `full`, `continue`, `stop`). Free text ("Other") at [P] that is just an approach id (`C`, `b`) chooses that approach, including one beyond the four shown. Any other free text is a plan edit: record it as `plan_edit`, choose the approach it names (else the recommended one), and echo the edited approach in one line before [E]. If an edit adds files, LOC or a dependency the approach didn't have, show the changed approach and ask again instead of executing. At a guided stage gate, free text other than `continue`/`stop` is context: record it as `note` on that stage's `stage_log` entry (after [A], [O] or a DELTA rescan, also append `- after [A]: <note>` or `- after [O]: <note>` under a `## Human corrections` heading at the end of `.aa/context.md`, so a later cache HIT keeps it), treat it as a correction that overrides your earlier findings from the next stage on, and continue. Free text at any other gate is read as a typed reply. Clicking is approval for rule 1; nothing changes before it.
 
 ## Stage banner (print at the start of every stage)
 

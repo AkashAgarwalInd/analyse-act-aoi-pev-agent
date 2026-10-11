@@ -215,3 +215,20 @@ def test_check_timeout_kills_the_whole_process_group(tmp_path):
     code, _ = tools._run_check_process(["sh", "-c", f"(sleep 1; touch '{marker}') & wait"], tmp_path, timeout=0.3)
     time.sleep(1.5)
     assert code is None and not marker.exists()
+
+
+def test_cache_note_appends_a_corrections_section_once(tmp_path):
+    (tmp_path / ".aa").mkdir()
+    (tmp_path / ".aa" / "context.md").write_text("# Context\n\nstack: node\n")
+    tools.cache_note(str(tmp_path), "A", "auth lives in\nservices/")
+    tools.cache_note(str(tmp_path), "O", "refresh is the entrypoint")
+    tools.cache_note(str(tmp_path), "A", "auth lives in services/")  # same note again (a re-run): no-op
+    assert (tmp_path / ".aa" / "context.md").read_text() == (
+        "# Context\n\nstack: node\n\n## Human corrections\n"
+        "- after [A]: auth lives in services/\n- after [O]: refresh is the entrypoint\n"
+    )
+
+
+def test_cache_note_creates_context_md(tmp_path):
+    tools.cache_note(str(tmp_path), "O", "x")
+    assert (tmp_path / ".aa" / "context.md").read_text() == "## Human corrections\n- after [O]: x\n"

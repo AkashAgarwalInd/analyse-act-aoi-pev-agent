@@ -106,8 +106,9 @@ jobs:
           {
             [ -f plan.md ] && cat plan.md
             if grep -q '^status=awaiting_stage_decision' out.txt; then
-              # guided stop: show what this run printed (the stage(s) it ran, up to the stop)
-              echo '```'; sed '/^status=/,$d' out.txt; echo '```'
+              # guided stop: show what this run printed (the stage(s) it ran, up to the stop). The reports
+              # contain ``` blocks (Mermaid, JSON), so the outer fence must be longer or they would close it
+              echo '`````'; sed '/^status=/,$d' out.txt; echo '`````'
             fi
             echo '```'; tail -n 4 out.txt; echo '```'
             if [ -s "aa-$THREAD.patch" ]; then echo '```diff'; cat "aa-$THREAD.patch"; echo '```'; fi

@@ -7,7 +7,8 @@ cache ─HIT──────────────────────�
 
 Every LLM stage goes through `budget` (⏸ if the stage ran over 1.5× its token budget) before its next stage.
 With --guided, [A], [O], DELTA and [I] then go through `guide` ⏸, where the human continues (optionally with a
-note for the later stages) or stops. Guided adds pauses; it never replaces the [P] gate.
+note for the later stages; a note on [A]/[O] is also added to .aa/context.md, so the cache keeps it) or stops.
+Guided adds pauses; it never replaces the [P] gate.
 ⏸ = interrupt(): the run stops and `aa-agent resume` continues it. Pause nodes are deterministic, because
 LangGraph re-runs an interrupted node from the top when it resumes.
 """
@@ -119,6 +120,7 @@ def build_graph(
     snapshot: Callable[[str], dict[str, str]] = tools.snapshot_dirty,
     diff_stats: Callable[[str, dict[str, str]], tuple[list[str], int]] = tools.diff_stats,
     write_session: Callable[[AAState, str], None] = session.write,
+    cache_note: Callable[[str, str, str], None] = tools.cache_note,
 ):
     def cache(state: AAState) -> dict:
         return {"cache": cache_check(state["repo"]), "stage_log": ["cache"]}
@@ -188,6 +190,7 @@ def build_graph(
 
     def guide(state: AAState) -> dict:
         letter = state["last_stage"]
+        write_session(state, "in_progress")  # so the skill can pick up from here (/analyse-act --from <next>)
         answer = interrupt({
             "kind": "stage",
             "stage": letter,
@@ -199,8 +202,14 @@ def build_graph(
         if answer.get("decision") != "continue":
             return {"status": "handed_off", "note": f"stopped by the human after stage {letter}"}
         note = str(answer.get("note") or "").strip()
+        if not note:
+            return {}
         # stage as the session logs it (DELTA is [O]'s rescan), so session.write can attach the note to that entry
-        return {"notes": [{"stage": SHARE_OF.get(letter, letter), "note": note}]} if note else {}
+        notes = [{"stage": SHARE_OF.get(letter, letter), "note": note}]
+        if letter in ("A", "O", "DELTA"):  # their findings are cached, so the correction must be too
+            cache_note(state["repo"], SHARE_OF.get(letter, letter), note)
+        write_session({**state, "notes": [*state.get("notes", []), *notes]}, "in_progress")
+        return {"notes": notes}
 
     def gate(state: AAState) -> dict:
         ids = [a["id"] for a in state.get("approaches", [])]

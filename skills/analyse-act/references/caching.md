@@ -21,6 +21,8 @@ On first write, *suggest* (do not apply) this `.gitignore` line to the user:
 
 Never write secret values (env values, keys, tokens, connection strings) into any `.aa/` file — names only.
 
+`context.md` may end with a `## Human corrections` section: notes the human gave after [A]/[O] in guided mode. They override the findings above them. When you patch or rewrite `context.md`, keep that section as it is, unless the rescan shows a correction no longer holds (then drop that line and say so).
+
 ## Reading the script output
 
 `scripts/aa-cache.sh` compares `.aa/cache_meta.json → git_commit_hash` with `HEAD`, and counts files changed since then — committed **and** uncommitted, excluding `.aa/` itself.

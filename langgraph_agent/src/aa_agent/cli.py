@@ -68,6 +68,15 @@ def _pause(snap) -> dict | None:
     return snap.interrupts[0].value if snap.interrupts else None
 
 
+def _print_paused_report(snap) -> None:
+    """Print again the report the pause asks the human to judge: [P] at the gate, the stage at a guided stop.
+    The run that stopped there printed it, but `resume -i` and `status` are new processes."""
+    pause = _pause(snap) or {}
+    letter = "P" if pause.get("kind") == "plan" else pause.get("stage") if pause.get("kind") == "stage" else None
+    if letter:
+        print(f"\n━━ [{letter}] {NAMES.get(letter, letter)} ━━\n{snap.values['outputs'].get(letter, '')}", flush=True)
+
+
 def _print_changes(snap) -> None:
     for path, loc in sorted(tools.diff_by_file(snap.values["repo"], snap.values.get("baseline_dirty", {})).items()):
         print(f"  {path}  {loc} LOC")
@@ -352,8 +361,7 @@ def _main(argv, run_stage, ask, running: dict) -> int:
         if error := _head_moved(snap):
             return _fail(error)
         if ask and not (args.choice or args.decision or args.edit or args.note):
-            if _pause(snap)["kind"] == "plan":  # the run that stopped here printed the report; show it again
-                print(f"\n━━ [P] {NAMES['P']} ━━\n{snap.values['outputs'].get('P', '')}", flush=True)
+            _print_paused_report(snap)
             return _drive(graph, config, args.plan_out, ask)
         answer, error = _answer(snap, args.choice, args.edit, args.decision, args.note)
         if error:
@@ -361,6 +369,7 @@ def _main(argv, run_stage, ask, running: dict) -> int:
         _stream(graph, Command(resume=answer), config)
         return _drive(graph, config, args.plan_out, ask) if ask else _report(graph, config, args.plan_out)
 
+    _print_paused_report(snap)
     print(f"stages: {' → '.join(snap.values.get('stage_log', []))}")
     print(f"next: {snap.next or 'end'}")
     return _report(graph, config, args.plan_out)
