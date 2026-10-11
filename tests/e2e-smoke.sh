@@ -31,6 +31,7 @@ check "no source edits"            'git -C "$work/repo" diff --quiet'
 
 echo "run 2: new task, --analyse-only"
 run '/analyse-act:analyse-act "sessionCleanup has no tests; what would it take to cover it?" --analyse-only' run2.txt
+check "printed [I] banner"         'grep -q "\[I\] INSPECT" "$work/run2.txt"'
 check "cache HIT reported"         'grep -q "HIT" "$work/run2.txt"'
 check "skipped [A] banner"         '! grep -q "\[A\] ANALYSE" "$work/run2.txt"'
 check "old session archived"       'ls "$work/repo/.aa/sessions/"*.json >/dev/null 2>&1'

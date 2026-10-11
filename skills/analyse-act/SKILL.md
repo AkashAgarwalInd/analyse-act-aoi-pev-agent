@@ -67,6 +67,8 @@ Guess a tier from the task text and the cached context (one line, e.g. `tier S (
 ━━ [I] INSPECT · tier M · cache HIT · stage budget ~12k tok ━━
 ```
 
+This applies in every mode, including `--analyse-only` and `--from`: the banner is how the run (and the e2e test) reports cache status, so never fold a stage into a free-form answer.
+
 End every stage with a 1–3 line **Stage summary** and `→ next: [X]`. Keep stage output tight: tables, bullets, Mermaid diagrams — no essays.
 
 ## Stages — load the reference only when entering that stage
