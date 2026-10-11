@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 — 2026-10-11
+
+- `aa-cache.sh --stamp` writes `cache_meta.json` and `dirty_at_scan.txt` from git and the clock, so the model no longer writes them by hand.
+- Fast path: a trivial task (one file, 5 lines or fewer) skips the stages, shows the exact diff and waits for `y`. Use `--full` to opt out.
+- `--branch` creates `aa/<task-slug>` at the start of [E]. The skill still never commits.
+- Stage banners are required in every mode, including `--analyse-only`.
+- GitHub Copilot and Aider adapters, generated like the Codex and Cursor ones. The CI drift check now also catches untracked adapter files.
+- `langgraph_agent/`: the headless `aa-agent` CLI for CI. It is built on LangGraph, checkpoints to SQLite, pauses for approval with `interrupt()` at [P], uses repo-confined tools, and has offline tests in CI. There is also an example GitHub Actions workflow.
+- The e2e smoke test has a third run for the fast path.
+
 ## 0.1.0 — 2026-10-11
 
 First public version.
