@@ -81,6 +81,8 @@ The examples use the manual-install name; with the plugin, write `/analyse-act:a
 /analyse-act "..." --branch                            # work on a new aa/<task-slug> branch
 ```
 
+**Gates.** In Claude Code, the plan gate shows the approaches as clickable options, each with a preview of its files, LOC and risk. Pick "Other" to type changes to the plan. The fast-path, drift and budget gates are clickable too. Typing `A`, `y` or `continue` still works, and is what headless runs and the other editors use.
+
 **Fast path.** A trivial change (one file, 5 lines or fewer, no behaviour change beyond the ask, never a dependency bump) skips the stages. You get the exact diff and reply `y` to apply it. Nothing is edited before you approve, on either path.
 
 See a full sample run in [docs/examples/bug-fix-walkthrough.md](docs/examples/bug-fix-walkthrough.md).
@@ -99,6 +101,17 @@ aa-agent resume --thread users-get-logged-out-a-minute-early --decision continue
 aa-agent status --thread users-get-logged-out-a-minute-early
 aa-agent run --from-session   # continue at [P] from a session the interactive skill left there
 ```
+
+**Interactive (local).** Add `-i` to `run` or `resume` to answer each pause in the terminal and keep going in the same process, with no separate `resume` commands:
+
+```
+$ aa-agent run "users get logged out a minute early" --check "npm test" -i
+[A] Inline fix (Recommended)   files: src/auth/token.ts   ~6 LOC   risk Low
+[B] Convert at middleware boundary   files: middleware/requireAuth.ts, src/auth/token.ts   ~25 LOC   risk Medium
+Choose A/B (or 1-2), e to edit, q to quit [A]:
+```
+
+Enter picks the recommended approach, and `e` lets you edit it. Budget and drift pauses ask `[c]ontinue / [s]top / [q]uit`. `q` (or Ctrl-D) leaves the thread paused and prints the `resume` command. The same checks apply as for `resume`, so a moved HEAD is still refused. `-i` turns itself off when stdin isn't a terminal or `CI` is set.
 
 - The agent's file tools reject paths outside the repo and inside `.git/`. The model can only write under `.aa/` until [E]. Its git tool takes read-only subcommands, and only options from an allowlist, because options such as `--no-index` and `--contents` read files outside the repo.
 - [E] and [V] can run **only** the commands you pass with `--check`, with no shell. The model may append test files or test names, but not options or paths outside the repo. The model writes `.aa/`, so a command recorded there is never trusted. Without `--check`, the checks are reported as manual.

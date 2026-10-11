@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Clickable gates: in Claude Code, the [P] plan gate uses AskUserQuestion, so you can click an approach (with a preview of its files, LOC and risk) or type changes to the plan. The fast-path, drift and budget gates are clickable too. The text reply still works, and is what headless runs and the other editors use.
+- `aa-agent run -i` / `resume -i` answers each pause in the terminal and carries on in the same process. `q` leaves the thread paused. It turns itself off without a TTY or in CI.
+- `aa-agent resume --edit` at a budget or drift pause is now an error instead of being silently ignored.
+
 ## 0.2.0 — 2026-10-11
 
 - `aa-cache.sh --stamp` writes `cache_meta.json` and `dirty_at_scan.txt` from git and the clock, so the model no longer writes them by hand.

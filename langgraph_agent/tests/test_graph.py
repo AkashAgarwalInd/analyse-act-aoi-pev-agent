@@ -330,6 +330,92 @@ def test_cli_budget_pause_needs_a_decision(tmp_path, monkeypatch, capsys):
     assert "status=awaiting_approval" in capsys.readouterr().out
 
 
+def test_cli_edit_is_refused_at_a_decision_pause(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub(tokens={"I": 99_000})
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", *base], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "--decision", "continue", "--edit", "x", *base],
+                    run_stage=stub) == 2
+    assert "--edit only applies at the [P] gate" in capsys.readouterr().err
+
+
+def hit_cache(monkeypatch, head=""):
+    real = cli.build_graph
+    monkeypatch.setattr(cli, "build_graph", lambda rs, checkpointer: real(
+        rs, checkpointer, cache_check=lambda r: {"status": "HIT", "head": head, "changed": []}))
+
+
+def answers(*replies):
+    queue = list(replies)
+    return lambda question: queue.pop(0)
+
+
+def test_cli_interactive_runs_to_the_end_in_one_call(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub()
+    plan = tmp_path / "plan.md"
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    argv = ["run", "t", "-i", "--plan-out", str(plan), *base]
+    assert cli.main(argv, run_stage=stub, ask=answers("e", "", "small")) == 0
+    assert stub.calls == ["I", "P", "E", "V"] and stub.states["E"]["plan_edit"] == "small"
+    assert "status=done" in capsys.readouterr().out
+    assert plan.exists()
+
+
+def test_cli_interactive_answers_a_budget_pause_then_the_plan(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub(tokens={"I": 99_000})
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers("c", "A")) == 0
+    out = capsys.readouterr().out
+    assert "over budget" in out and "status=done" in out
+    assert stub.calls == ["I", "P", "E", "V"]
+
+
+def test_cli_interactive_quit_leaves_the_thread_paused(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers("q")) == 0
+    assert "aa-agent resume --thread t --choice" in capsys.readouterr().out
+    assert cli.main(["resume", "--thread", "t", "-i", *base], run_stage=stub, ask=answers("A")) == 0
+    assert "status=done" in capsys.readouterr().out
+    assert stub.calls == ["I", "P", "E", "V"]
+
+
+def test_cli_interactive_is_off_without_a_terminal(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=Stub()) == 0
+    captured = capsys.readouterr()
+    assert "interactive off" in captured.err and "status=awaiting_approval" in captured.out
+
+
+def test_cli_interactive_uses_input_in_a_terminal(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr("builtins.input", answers("B"))
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=Stub()) == 0
+    assert "status=done" in capsys.readouterr().out
+    monkeypatch.setenv("CI", "true")
+    assert cli.main(["run", "t2", "-i", "--thread", "t2", *base], run_stage=Stub()) == 0
+    assert "status=awaiting_approval" in capsys.readouterr().out
+
+
+def test_cli_interactive_refuses_when_head_moved(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch, head="a" * 40)
+    monkeypatch.setattr(cli.tools, "git_head", lambda repo: "b" * 40)
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers()) == 2  # refused before asking
+    assert "HEAD moved" in capsys.readouterr().err
+    assert stub.calls == ["I", "P"]
+
+
 def test_written_session_matches_the_skill_schema(tmp_path):
     import json
 
