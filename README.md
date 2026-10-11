@@ -81,7 +81,7 @@ The examples use the manual-install name; with the plugin, write `/analyse-act:a
 /analyse-act "..." --branch                            # work on a new aa/<task-slug> branch
 ```
 
-**Fast path.** A trivial change (one file, 5 lines or fewer, no behaviour change beyond the ask) skips the stages. You get the exact diff and reply `y` to apply it. Nothing is edited before you approve, on either path.
+**Fast path.** A trivial change (one file, 5 lines or fewer, no behaviour change beyond the ask, never a dependency bump) skips the stages. You get the exact diff and reply `y` to apply it. Nothing is edited before you approve, on either path.
 
 See a full sample run in [docs/examples/bug-fix-walkthrough.md](docs/examples/bug-fix-walkthrough.md).
 
@@ -94,13 +94,18 @@ pip install "analyse-act-agent @ git+https://github.com/AkashAgarwalInd/analyse-
 export ANTHROPIC_API_KEY=...
 aa-agent run "users get logged out a minute early" --check "npm test" --plan-out plan.md   # stops at [P]
 aa-agent resume --thread users-get-logged-out-a-minute-early --choice A  # [E] then [V]
+aa-agent resume --thread users-get-logged-out-a-minute-early --choice A --edit "also cover refresh tokens"
+aa-agent resume --thread users-get-logged-out-a-minute-early --decision continue  # after a budget/drift pause
 aa-agent status --thread users-get-logged-out-a-minute-early
+aa-agent run --from-session   # continue at [P] from a session the interactive skill left there
 ```
 
 - The agent's file tools reject paths outside the repo and inside `.git/`. The model can only write under `.aa/` until [E]. Its git tool takes read-only subcommands, and only options from an allowlist, because options such as `--no-index` and `--contents` read files outside the repo.
 - [E] and [V] can run **only** the commands you pass with `--check` (extra arguments allowed, no shell). The model writes `.aa/`, so a command recorded there is never trusted. Without `--check`, the checks are reported as manual.
 - The cache works as it does in the skill: HIT skips [A] and [O], DELTA rescans only the changed files (or does a full rescan if a manifest changed), and `--refresh` forces a full scan. The runner stamps the cache itself.
 - `resume` refuses if HEAD has moved since the plan was made, or if the plan had no parseable approaches. In that case the run ends `handed_off`.
+- **Pauses.** The runner enforces the skill's rules mechanically. Each stage's tokens are measured: what it read plus what it wrote, not the history re-sent on every call. A stage that runs more than 1.5× its tier budget pauses with `status=awaiting_budget_decision`. After [E], the diff is checked against the plan and the tier caps. An unplanned file, more than 1.5× the planned LOC, a cap breach the plan didn't flag, or `DRIFT` from the model pauses with `status=awaiting_drift_decision`. Resume with `--decision continue` or `stop`.
+- **Sessions.** `.aa/current_session.json` is shared with the interactive skill. A headless run can be finished with `/analyse-act --from P`, and an interactive plan with `aa-agent run --from-session`.
 - The runner never commits or pushes. `--branch` creates `aa/<task-slug>` before [E].
 - [V] gets one auto-fix retry. If it still fails, the run ends with `status=handed_off` and exit code 1.
 - [docs/examples/github-actions.yml](docs/examples/github-actions.yml) is a two-dispatch example: one dispatch plans, and the other approves and executes. The resulting diff is uploaded as a patch even when [V] hands off.

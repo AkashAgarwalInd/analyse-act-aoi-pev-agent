@@ -15,7 +15,10 @@ jobs:
         run: shellcheck skills/analyse-act/scripts/*.sh scripts/*.sh tests/*.sh tests/fixtures/*.sh
 
       - name: cache script tests
-        run: sh tests/aa-cache.test.sh
+        run: |
+          pipx install check-jsonschema
+          sh tests/aa-cache.test.sh | tee out.txt
+          ! grep -q '^skip' out.txt
 
       - name: validate sample .aa files against schemas
         run: |

@@ -127,3 +127,12 @@ def test_parse_approaches_json_and_fallback():
     assert [(a["id"], a["recommended"]) for a in fallback] == [("A", True), ("B", False)]
     assert last_json_block('```json\n{"passed": true}\n```') == {"passed": True}
     assert last_json_block("no json") == {}
+
+
+def test_diff_stats_counts_tracked_and_untracked(repo):
+    (repo / "a.txt").write_text("one\nTWO\nthree\nfour\n")  # 1 changed + 2 added -> max(3, 1)
+    (repo / "new.txt").write_text("x\ny\n")
+    (repo / ".aa").mkdir()
+    (repo / ".aa" / "context.md").write_text("ignored\n")
+    assert tools.diff_stats(str(repo), []) == (["a.txt", "new.txt"], 5)
+    assert tools.diff_stats(str(repo), ["new.txt"]) == (["a.txt"], 3)

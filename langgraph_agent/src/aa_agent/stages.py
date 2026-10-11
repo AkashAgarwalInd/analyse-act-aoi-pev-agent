@@ -29,13 +29,17 @@ HEADLESS = """You are running headless (CI); nobody can answer questions mid-sta
 - Do only the stage below, then reply with its report (banner, body, stage summary) and stop.
 - Where the reference says to ask the human, make the conservative choice and state the assumption instead.
   The one exception is [P]: the graph itself stops there for approval.
-- Never commit, push, or edit .gitignore. Don't write .aa/cache_meta.json or .aa/dirty_at_scan.txt:
-  the runner stamps the cache. The runner's checkpoint replaces .aa/current_session.json; don't write it.
-- If [E] would need to drift from the approved plan, stop editing and start the report with DRIFT."""
+- Never commit, push, or edit .gitignore. Don't write .aa/cache_meta.json, .aa/dirty_at_scan.txt or
+  .aa/current_session.json: the runner writes them.
+- If [E] would need to drift from the approved plan (unplanned file, new dependency, interface change, much
+  bigger diff), stop editing, start the report with DRIFT and say what you need. The runner pauses for the human.
+- Budgets and tier caps are measured by the runner; don't pad or cut work to fit them."""
 
 STAGE_TAIL = {
     "DELTA": "Cache DELTA: read .aa/context.md and .aa/schema_cache.json, rescan ONLY the changed files listed above "
     "(drop deleted ones), and patch the affected sections with write_aa_file. Don't rescan anything else.",
+    "I": 'End with a ```json block: {"tier": "S"|"M"|"L"}',
+    "E": 'End with a ```json block: {"drift": true|false}',
     "P": 'End with a ```json block: {"approaches": [{"id": "A", "title": "...", "files": ["..."], '
     '"est_loc": 10, "risk": "Low", "recommended": true}, ...]}',
     "V": 'End with a ```json block: {"passed": true|false} — true only if every check you ran passed.',
@@ -69,6 +73,8 @@ def task_message(stage: str, state: AAState) -> str:
         parts.append("[A] and [O] were skipped on a cache HIT: read .aa/context.md and .aa/schema_cache.json.")
     if state.get("chosen"):
         parts.append(f"Approved approach: {state['chosen']}")
+    if state.get("plan_edit"):
+        parts.append(f"The human's edits to that approach (they override the plan): {state['plan_edit']}")
     if state.get("branch_name"):
         parts.append(f"Working branch (already created): {state['branch_name']}")
     for done, report in state.get("outputs", {}).items():
@@ -99,22 +105,34 @@ def parse_approaches(text: str) -> list[dict]:
     ]
 
 
-def tool_loop(llm, tool_list, system: str, human: str, max_steps: int) -> str:
+def tool_loop(llm, tool_list, system: str, human: str, max_steps: int) -> tuple[str, int]:
+    """Returns (final text, tokens the stage added). Tokens = context growth since the first call (what the
+    stage read) + everything it wrote, which is what the skill's budgets estimate; re-sent history isn't counted."""
     by_name = {t.name: t for t in tool_list}
     model = llm.bind_tools(tool_list) if tool_list else llm
     messages = [SystemMessage(system), HumanMessage(human)]
-    for _ in range(max_steps):
+    first_input = last_input = output = 0
+
+    def tokens() -> int:
+        return max(last_input - first_input, 0) + output
+
+    for step in range(max_steps):
         reply = model.invoke(messages)
         messages.append(reply)
+        usage = getattr(reply, "usage_metadata", None) or {}
+        last_input = usage.get("input_tokens", 0)
+        if step == 0:
+            first_input = last_input
+        output += usage.get("output_tokens", 0)
         if not reply.tool_calls:
-            return reply.text
+            return reply.text, tokens()
         for call in reply.tool_calls:
             try:
                 result = by_name[call["name"]].invoke(call["args"])
             except Exception as exc:  # report tool errors to the model instead of crashing the stage
                 result = f"error: {exc}"
             messages.append(ToolMessage(str(result), tool_call_id=call["id"]))
-    return f"⚠ stage stopped after {max_steps} tool steps without a final report"
+    return f"⚠ stage stopped after {max_steps} tool steps without a final report", tokens()
 
 
 def make_run_stage(model: str = DEFAULT_MODEL, max_steps: int = 40, llm=None):
@@ -129,8 +147,12 @@ def make_run_stage(model: str = DEFAULT_MODEL, max_steps: int = 40, llm=None):
         stage_tools = tools.make_tools(
             repo, write_aa=stage in ("DELTA", "A", "O", "I", "P"), edit=stage in ("E", "FIX"), checks=checks
         )
-        text = tool_loop(llm, stage_tools, system_prompt(stage), task_message(stage, state), max_steps)
-        result: dict = {"output": text}
+        text, used = tool_loop(llm, stage_tools, system_prompt(stage), task_message(stage, state), max_steps)
+        result: dict = {"output": text, "tokens": used}
+        if stage == "I":
+            result["tier"] = last_json_block(text).get("tier")
+        if stage in ("E", "FIX"):
+            result["drift"] = text.lstrip().startswith("DRIFT") or last_json_block(text).get("drift") is True
         if stage == "P":
             result["approaches"] = parse_approaches(text)
         if stage == "V":

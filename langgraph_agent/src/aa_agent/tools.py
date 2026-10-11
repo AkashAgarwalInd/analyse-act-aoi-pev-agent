@@ -86,6 +86,28 @@ def git_head(repo: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+def diff_stats(repo: str, exclude: list[str]) -> tuple[list[str], int]:
+    """Files changed vs HEAD (tracked and untracked, minus .aa/ and `exclude`) and their LOC.
+
+    LOC per file is max(added, deleted), so a rewrite counts its size and a pure deletion isn't free."""
+    root = Path(repo)
+    if not git_head(repo):
+        return [], 0
+    spec = ["--", ".", ":(exclude).aa"]
+    stats: dict[str, int] = {}
+    for line in _run(["git", "diff", "--numstat", "--no-renames", "HEAD", *spec], root).stdout.splitlines():
+        added, deleted, path = line.split("\t", 2)
+        stats[path] = max(int(added) if added.isdigit() else 0, int(deleted) if deleted.isdigit() else 0)
+    for path in _run(["git", "ls-files", "--others", "--exclude-standard", *spec], root).stdout.splitlines():
+        try:
+            stats[path] = len((root / path).read_text(errors="replace").splitlines())
+        except OSError:
+            stats[path] = 0
+    skip = set(exclude)
+    files = sorted(p for p in stats if p not in skip)
+    return files, sum(stats[p] for p in files)
+
+
 # --- model-facing tools ---
 
 

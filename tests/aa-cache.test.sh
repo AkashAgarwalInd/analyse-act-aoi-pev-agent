@@ -1,5 +1,6 @@
 #!/bin/sh
 # Tests for skills/analyse-act/scripts/aa-cache.sh. Usage: sh tests/aa-cache.test.sh
+# shellcheck disable=SC2016  # check_stamp() evals its single-quoted condition later, on purpose
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 script="$root/skills/analyse-act/scripts/aa-cache.sh"
@@ -85,6 +86,8 @@ expect "reverted dirty file still rescanned" DELTA 1-files-changed 1
 if command -v check-jsonschema >/dev/null 2>&1; then
   check_stamp "stamped meta matches schema" \
     'check-jsonschema -q --schemafile "$root/skills/analyse-act/schemas/cache_meta.schema.json" .aa/cache_meta.json'
+else
+  echo "skip stamped meta matches schema (check-jsonschema not installed; CI installs it)"
 fi
 
 repo="$work/plain"

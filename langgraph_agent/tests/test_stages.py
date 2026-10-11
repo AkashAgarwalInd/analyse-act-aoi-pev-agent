@@ -79,3 +79,30 @@ def test_prompts_come_from_the_skill():
 def test_default_model_builds_without_network(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     assert callable(stages.make_run_stage())
+
+
+def usage(msg, inp, out):
+    msg.usage_metadata = {"input_tokens": inp, "output_tokens": out, "total_tokens": inp + out}
+    return msg
+
+
+def test_tokens_count_context_growth_and_output_not_resent_history(tmp_path):
+    (tmp_path / "a.txt").write_text("x")
+    model = ScriptedModel([
+        usage(call("read_file", {"path": "a.txt"}), 5_000, 100),   # prompt baseline 5k
+        usage(call("list_dir", {}, id="c2"), 9_000, 100),
+        usage(AIMessage(content='DRIFT: needs b.js\n```json\n{"drift": true}\n```'), 12_000, 300),
+    ])
+    result = stages.make_run_stage(llm=model)("E", state(tmp_path))
+    assert result["tokens"] == (12_000 - 5_000) + 500
+    assert result["drift"] is True
+
+
+def test_inspect_reports_tier(tmp_path):
+    model = ScriptedModel([AIMessage(content='rca\n```json\n{"tier": "L"}\n```')])
+    assert stages.make_run_stage(llm=model)("I", state(tmp_path))["tier"] == "L"
+
+
+def test_plan_edit_is_in_the_execute_prompt():
+    message = stages.task_message("E", {"task": "t", "chosen": "A", "plan_edit": "skip the refactor"})
+    assert "skip the refactor" in message and "override the plan" in message

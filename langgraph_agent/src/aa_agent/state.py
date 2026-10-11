@@ -28,5 +28,15 @@ class AAState(TypedDict, total=False):
     branch_name: str
     validation_ok: bool
     retry_used: bool
+    plan_edit: str  # the human's edits to the chosen approach, given at the [P] gate
+    tier_assigned: str  # tier from [I] when --tier wasn't given
+    tokens: Annotated[dict[str, int], merge]  # stage -> tokens it added (context growth + output)
+    budget_ok: list[str]  # stages the human let run over budget
+    last_stage: str  # the stage `budget` is checking
+    session_log: Annotated[list[dict[str, str]], operator.add]  # stage_log for .aa/current_session.json
+    drift_reported: bool  # [E]/[FIX] said it needed something outside the plan
+    baseline_dirty: list[str]  # files already changed before [E]
+    diff_files: list[str]
+    diff_loc: int
     status: str  # analysed | done | handed_off
     note: str  # why a run was handed off early

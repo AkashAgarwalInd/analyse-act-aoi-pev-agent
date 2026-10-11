@@ -59,6 +59,7 @@ After any scan ([A]/[O] or a DELTA patch), record it with `sh "${CLAUDE_SKILL_DI
 - **New task** (no `--from`): if a session file exists for a different task, move it to `.aa/sessions/<YYYYMMDD-HHMMSS>.json`, then start a fresh one.
 - **`--from <stage>`**: load the session. If it is missing, or its `task` doesn't match the one given, say so and ask whether to start over from [I] — never execute a plan recorded for another task.
 - Append to `stage_log` at the end of each stage (schema: `schemas/session.schema.json`).
+- The headless runner (`aa-agent`) reads and writes the same file. A session it left at `awaiting_approval` can be continued here with `--from P`, and `aa-agent run --from-session` continues one you left at the [P] gate.
 - Get every timestamp (session archive names, `at`, `last_updated`) from the clock: `date -u +%Y%m%d-%H%M%S` for file names, `date -u +%Y-%m-%dT%H:%M:%SZ` for JSON fields. Never invent times.
 
 ## Tier pre-assessment (right after Stage 0)
@@ -69,10 +70,10 @@ Guess a tier from the task text and the cached context (one line, e.g. `tier S (
 
 Right after the tier pre-assessment, decide whether the task is trivial. It is only if **all** hold:
 - one file, ≤5 changed lines;
-- no behaviour change beyond the literal ask: a typo, a rename local to one file, a patch/minor bump of an existing dependency, a one-line config value;
+- no behaviour change beyond the literal ask: a typo, a rename local to one file, a one-line config value;
 - you can name the exact location without scanning the repo.
 
-If anything is uncertain, or `--full` is set, run the normal stages. Otherwise:
+Dependency bumps never qualify: they touch the manifest and a lockfile, and can change behaviour. If anything is uncertain, or `--full` is set, run the normal stages. Otherwise:
 
 ```
 ━━ [F] FAST PATH · cache HIT ━━
