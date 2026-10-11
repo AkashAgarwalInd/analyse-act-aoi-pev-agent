@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AASchemaCache",
+  "description": "Observed data models, entrypoints, flows and test commands (Stage O).",
+  "type": "object",
+  "properties": {
+    "data_models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "file_path": { "type": "string" },
+          "fields": { "type": "object", "additionalProperties": { "type": "string" } },
+          "relationships": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["name", "file_path"]
+      }
+    },
+    "entrypoints": { "type": "array", "items": { "type": "string" } },
+    "data_flows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "feature": { "type": "string" },
+          "flow_sequence": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["feature", "flow_sequence"]
+      }
+    },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string" },
+        "locations": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

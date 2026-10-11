@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: shellcheck skills/analyse-act/scripts/*.sh scripts/*.sh tests/*.sh tests/fixtures/*.sh
+
+      - name: cache script tests
+        run: sh tests/aa-cache.test.sh
+
+      - name: validate sample .aa files against schemas
+        run: |
+          pipx run check-jsonschema --schemafile skills/analyse-act/schemas/cache_meta.schema.json docs/examples/sample-aa/cache_meta.json
+          pipx run check-jsonschema --schemafile skills/analyse-act/schemas/schema_cache.schema.json docs/examples/sample-aa/schema_cache.json
+          pipx run check-jsonschema --schemafile skills/analyse-act/schemas/session.schema.json docs/examples/sample-aa/current_session.json
+
+      - name: adapters in sync with adapters/src/workflow.md
+        run: |
+          sh scripts/build-adapters.sh
+          git diff --exit-code adapters/
+
+      - name: plugin manifest
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate .

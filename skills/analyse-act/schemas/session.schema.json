@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AASession",
+  "description": "State of the current task across stages I, P, E, V. Local only.",
+  "type": "object",
+  "properties": {
+    "task": { "type": "string" },
+    "tier": { "enum": ["S", "M", "L"] },
+    "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+    "rca": {
+      "type": "object",
+      "properties": {
+        "root_cause": { "type": "string" },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "enum": ["High", "Medium", "Low"] }
+      }
+    },
+    "blast_radius": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "area": { "type": "string" },
+          "type": { "enum": ["direct", "indirect"] },
+          "risk": { "enum": ["Low", "Medium", "High"] },
+          "why": { "type": "string" }
+        },
+        "required": ["area", "type", "risk"]
+      }
+    },
+    "approaches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "files": { "type": "array", "items": { "type": "string" } },
+          "est_loc": { "type": "integer" },
+          "risk": { "enum": ["Low", "Medium", "High"] },
+          "recommended": { "type": "boolean" },
+          "exceeds_cap": { "type": "boolean" }
+        },
+        "required": ["id", "title", "files"]
+      }
+    },
+    "chosen": { "type": "string" },
+    "status": { "enum": ["in_progress", "awaiting_approval", "done", "handed_off"] },
+    "stage_log": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stage": { "enum": ["A", "O", "I", "P", "E", "V"] },
+          "at": { "type": "string", "format": "date-time" },
+          "summary": { "type": "string" }
+        },
+        "required": ["stage", "summary"]
+      }
+    }
+  },
+  "required": ["task"]
+}

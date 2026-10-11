@@ -1,0 +1,13 @@
+{
+  "data_models": [
+    { "name": "Session", "file_path": "prisma/schema.prisma",
+      "fields": { "id": "String", "userId": "String", "expiresAt": "DateTime" },
+      "relationships": ["Session.userId -> User.id"] }
+  ],
+  "entrypoints": ["src/server.ts"],
+  "data_flows": [
+    { "feature": "authenticated request",
+      "flow_sequence": ["routes/*", "middleware/requireAuth.ts", "auth/token.ts:isExpired"] }
+  ],
+  "tests": { "command": "npm test", "locations": ["src/auth/token.test.ts"] }
+}

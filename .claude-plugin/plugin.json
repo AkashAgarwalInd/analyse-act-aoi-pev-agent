@@ -1,0 +1,12 @@
+{
+  "name": "analyse-act",
+  "version": "0.1.0",
+  "description": "Analyse-Act (AOI-PEV): a staged engineering workflow — Analyse, Observe, Inspect, then Plan, Execute, Validate — with a human approval gate before any code is written.",
+  "author": {
+    "name": "Akash Agarwal"
+  },
+  "homepage": "https://github.com/AkashAgarwalInd/analyse-act-aoi-pev-agent",
+  "repository": "https://github.com/AkashAgarwalInd/analyse-act-aoi-pev-agent",
+  "license": "MIT",
+  "keywords": ["workflow", "rca", "planning", "code-review", "bug-fix", "feature"]
+}

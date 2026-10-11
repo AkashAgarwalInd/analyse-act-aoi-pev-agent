@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AACacheMeta",
+  "description": "Which commit the .aa/ cache reflects.",
+  "type": "object",
+  "properties": {
+    "git_commit_hash": { "type": "string", "description": "git rev-parse HEAD at time of scan, or \"none\" outside git" },
+    "last_updated": { "type": "string", "format": "date-time" },
+    "modified_files_delta": {
+      "type": "array",
+      "description": "Files rescanned in the most recent delta update",
+      "items": { "type": "string" }
+    }
+  },
+  "required": ["git_commit_hash", "last_updated"]
+}

@@ -1,0 +1,96 @@
+{
+  "task": "users get logged out about a minute before their session should expire",
+  "tier": "M",
+  "acceptance_criteria": [
+    "a token is valid until exp + 60s and expired after it",
+    "existing expiry tests still pass"
+  ],
+  "rca": {
+    "root_cause": "clock-skew grace subtracted instead of added, so tokens expire 60s early",
+    "evidence": [
+      "src/auth/token.ts:18",
+      "git blame a1b2c3d"
+    ],
+    "confidence": "High"
+  },
+  "blast_radius": [
+    {
+      "area": "src/auth/token.ts:isExpired",
+      "type": "direct",
+      "risk": "Low",
+      "why": "covered by token.test.ts"
+    },
+    {
+      "area": "middleware/requireAuth.ts",
+      "type": "indirect",
+      "risk": "Medium",
+      "why": "gates every protected route; integration tests only"
+    },
+    {
+      "area": "jobs/sessionCleanup.ts",
+      "type": "indirect",
+      "risk": "High",
+      "why": "calls isExpired(), no tests"
+    }
+  ],
+  "approaches": [
+    {
+      "id": "A",
+      "title": "Flip the sign: exp + GRACE_SECONDS < now",
+      "files": [
+        "src/auth/token.ts",
+        "src/auth/token.test.ts",
+        "jobs/sessionCleanup.test.ts"
+      ],
+      "est_loc": 30,
+      "risk": "Low",
+      "recommended": true
+    },
+    {
+      "id": "B",
+      "title": "Remove the grace window",
+      "files": [
+        "src/auth/token.ts",
+        "src/auth/token.test.ts",
+        "jobs/sessionCleanup.test.ts"
+      ],
+      "est_loc": 25,
+      "risk": "Medium",
+      "recommended": false
+    }
+  ],
+  "chosen": "A",
+  "status": "done",
+  "stage_log": [
+    {
+      "stage": "A",
+      "at": "2026-10-11T10:00:00Z",
+      "summary": "Express + TS + Prisma; wrote context.md"
+    },
+    {
+      "stage": "O",
+      "at": "2026-10-11T10:03:00Z",
+      "summary": "traced auth request flow; wrote schema_cache.json"
+    },
+    {
+      "stage": "I",
+      "at": "2026-10-11T10:06:00Z",
+      "summary": "root cause token.ts:18 grace sign; tier raised S->M for untested sessionCleanup"
+    },
+    {
+      "stage": "P",
+      "at": "2026-10-11T10:09:00Z",
+      "summary": "offered A (flip sign) vs B (remove grace)"
+    },
+    {
+      "stage": "E",
+      "at": "2026-10-11T10:12:00Z",
+      "summary": "approach A applied; 3 files, 34 LOC"
+    },
+    {
+      "stage": "V",
+      "at": "2026-10-11T10:15:00Z",
+      "summary": "43 tests pass; 1 manual staging check handed off"
+    }
+  ]
+}

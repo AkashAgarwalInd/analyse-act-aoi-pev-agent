@@ -1,0 +1,14 @@
+{
+  "name": "analyse-act",
+  "description": "Analyse-Act (AOI-PEV) staged engineering workflow skill.",
+  "owner": {
+    "name": "Akash Agarwal"
+  },
+  "plugins": [
+    {
+      "name": "analyse-act",
+      "source": "./",
+      "description": "Staged AOI-PEV engineering workflow with cached repo context, blast-radius analysis and a human plan gate."
+    }
+  ]
+}
