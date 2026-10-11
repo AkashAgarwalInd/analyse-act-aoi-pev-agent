@@ -582,3 +582,95 @@ def test_cli_refuses_session_whose_plan_was_already_chosen(tmp_path, capsys):
     base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
     assert cli.main(["run", "--from-session", *base], run_stage=Stub()) == 2
     assert "already chosen" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw,ids", [
+    ([{"id": "a"}, {"id": " b "}], ["A", "B"]),
+    ([{"id": 1}, {"title": "no id"}, "junk", {"id": "1"}], ["1"]),  # dropped: no id, not an object, repeat
+    ({"id": "A"}, []),
+])
+def test_approach_ids_are_normalised(raw, ids):
+    g = graph(Stub(approaches=raw), status="HIT")
+    g.invoke(start(), CFG)
+    assert [a["id"] for a in g.get_state(CFG).values["approaches"]] == ids
+    if ids:
+        g.invoke(Command(resume=ids[0].lower()), CFG)
+        assert g.get_state(CFG).values["chosen"] == ids[0]
+
+
+def test_approved_drift_is_not_asked_again_when_fix_changes_the_counts():
+    stub = Stub(validate_results=(False, True), approaches=[{"id": "A", "title": "x", "files": ["a.js"],
+                                                             "est_loc": 20}])
+    g = build_graph(stub, checkpointer=InMemorySaver(),
+                    cache_check=lambda r: {"status": "HIT", "changed": []}, snapshot=lambda r: {},
+                    diff_stats=lambda r, b: (["a.js", "c.js"], 43 if "FIX" in stub.calls else 40),
+                    write_session=lambda s, st: None)
+    g.invoke(start(), CFG)
+    g.invoke(Command(resume="A"), CFG)
+    assert "40 LOC changed vs ~20" in pause(g)["reason"]
+    g.invoke(Command(resume="continue"), CFG)
+    assert pause(g) is None and g.get_state(CFG).values["status"] == "done"
+
+
+def test_a_new_unplanned_file_after_fix_is_asked_about():
+    stub = Stub(validate_results=(False, True))
+    g = build_graph(stub, checkpointer=InMemorySaver(),
+                    cache_check=lambda r: {"status": "HIT", "changed": []}, snapshot=lambda r: {},
+                    diff_stats=lambda r, b: (["a.js", "c.js", "d.js"] if "FIX" in stub.calls else ["a.js", "c.js"], 5),
+                    write_session=lambda s, st: None)
+    g.invoke(start(), CFG)
+    g.invoke(Command(resume="A"), CFG)
+    g.invoke(Command(resume="continue"), CFG)
+    assert stub.calls[-1] == "FIX" and "d.js" in pause(g)["reason"]
+
+
+def test_from_session_refuses_when_head_moved_since_the_plan(tmp_path, monkeypatch, capsys):
+    session.write({"repo": str(tmp_path), "task": "t", "approaches": APPROACHES, "cache": {"head": "a" * 40}},
+                  "awaiting_approval")
+    assert session.read(str(tmp_path))["head"] == "a" * 40
+    monkeypatch.setattr(cli.tools, "git_head", lambda repo: "b" * 40)
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "--from-session", *base], run_stage=Stub()) == 2
+    assert "HEAD moved" in capsys.readouterr().err
+
+
+def test_from_session_seeds_the_assigned_tier_and_clean_ids(tmp_path, monkeypatch):
+    session.write({"repo": str(tmp_path), "task": "t", "tier": "S", "approaches": APPROACHES}, "awaiting_approval")
+    data = session.read(str(tmp_path))
+    data["approaches"][0]["id"] = "a"
+    session.path(str(tmp_path)).write_text(__import__("json").dumps(data))
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "--from-session", *base], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "--choice", "a", *base], run_stage=stub) == 0
+    assert stub.states["E"]["tier_assigned"] == "S" and not stub.states["E"].get("tier")
+
+
+def test_crash_handler_keeps_the_original_error_when_the_checkpoint_fails(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    broken = {"db": False}
+
+    class LocksTheDb(Stub):
+        def __call__(self, stage, state):
+            broken["db"] = True
+            raise RuntimeError("database is locked")
+
+    real = cli._graph
+
+    def graph_with_failing_state(args, run_stage=None):
+        g, config = real(args, run_stage)
+        real_get_state = g.get_state
+
+        def get_state(*a, **kw):
+            if broken["db"]:
+                raise OSError("disk I/O error")
+            return real_get_state(*a, **kw)
+
+        g.get_state = get_state
+        return g, config
+
+    monkeypatch.setattr(cli, "_graph", graph_with_failing_state)
+    with pytest.raises(RuntimeError, match="database is locked"):
+        cli.main(["run", "t", "--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")], run_stage=LocksTheDb())
+    out = capsys.readouterr().out
+    assert "status=interrupted thread=t" in out and "disk I/O error" in out

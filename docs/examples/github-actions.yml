@@ -5,6 +5,8 @@
 #   2. Run it again with the thread id plus either a choice (A, B, …, optionally with an edit) or a
 #      decision (continue / stop) — repeat until it finishes. Always run it on the SAME commit.
 #   3. If a run crashed (API error, timeout), run it again with only the thread id: it retries that stage.
+#      A crash during [E] or its fix retry can't be retried (its half-made edits would hide from the drift
+#      check): apply the aa-<thread>-patch locally, then finish with /analyse-act --from E or start a new run.
 #
 # Every run saves the checkpoint and the uncommitted edits (.aa/worktree.patch) as artifact aa-<thread>,
 # and the next run restores both, so a run can pause any number of times. The final diff is in the job
@@ -85,7 +87,7 @@ jobs:
         if: always() && env.THREAD != ''
         run: |
           git add --intent-to-add -A -- . ':!.aa'
-          git diff -- . ':!.aa' > .aa/worktree.patch
+          git diff --binary -- . ':!.aa' > .aa/worktree.patch  # --binary: git apply can't restore binary files otherwise
           cp .aa/worktree.patch "aa-$THREAD.patch"
           {
             [ -f plan.md ] && cat plan.md

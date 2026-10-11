@@ -19,7 +19,8 @@ def _read(ask: Ask, question: str) -> str | None:
 
 
 def ask_plan(approaches: list[dict], ask: Ask, out: TextIO) -> dict | None:
-    """{"choice": id, "edit": str} for the approach the human picks, or None to quit."""
+    """{"choice": id, "edit": str} for the approach the human picks, or None to quit. Ids are uppercase strings
+    (graph.clean_approaches)."""
     ids = [a["id"] for a in approaches]
     default = next((a["id"] for a in approaches if a.get("recommended")), ids[0])
     print(file=out)
@@ -39,15 +40,21 @@ def ask_plan(approaches: list[dict], ask: Ask, out: TextIO) -> dict | None:
             return ids[int(answer) - 1]
         return answer.upper() if answer.upper() in ids else None
 
-    question = f"Choose {'/'.join(ids)} (or 1-{len(ids)}), e to edit, q to quit [{default}]: "
+    # an approach with id E or Q is picked by typing its id; editing and quitting then take the whole word
+    edit_word, quit_word = ("edit" if "E" in ids else "e"), ("quit" if "Q" in ids else "q")
+
+    def quits(answer: str | None) -> bool:
+        return answer is None or answer.lower() in (quit_word, "quit")
+
+    question = f"Choose {'/'.join(ids)} (or 1-{len(ids)}), {edit_word} to edit, {quit_word} to quit [{default}]: "
     for _ in range(TRIES):
         answer = _read(ask, question)
-        if answer is None or answer.lower() == "q":
+        if quits(answer):
             return None
-        if answer.lower() == "e":
+        if answer.lower() in (edit_word, "edit"):
             for _ in range(TRIES):
                 which = _read(ask, f"Which approach? [{default}]: ")
-                if which is None or which.lower() == "q":
+                if quits(which):
                     return None
                 if choice := pick(which):
                     edit = _read(ask, "Your changes to the plan: ")
@@ -56,7 +63,7 @@ def ask_plan(approaches: list[dict], ask: Ask, out: TextIO) -> dict | None:
             return None
         if choice := pick(answer):
             return {"choice": choice, "edit": ""}
-        print(f"pick one of {', '.join(ids)}, e or q", file=out)
+        print(f"pick one of {', '.join(ids)}, {edit_word} or {quit_word}", file=out)
     return None
 
 

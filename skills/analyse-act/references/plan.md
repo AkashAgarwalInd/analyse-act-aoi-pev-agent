@@ -34,7 +34,7 @@ Not doing: refactoring token storage (out of scope)
 Reply A or B (or edit the plan) to continue.
 ```
 
-Save `approaches` to `.aa/current_session.json`, append to `stage_log`.
+Save `approaches` and `head` (the commit the plan was made on: the `head=` line from `aa-cache.sh`, or `git rev-parse HEAD`) to `.aa/current_session.json`, append to `stage_log`.
 
 ## ⛔ STOP
 

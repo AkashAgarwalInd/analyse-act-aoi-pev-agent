@@ -65,6 +65,8 @@ def write(state: dict, status: str) -> None:
         data["tier"] = tier
     if state.get("approaches"):
         data["approaches"] = [_approach(a) for a in state["approaches"]]
+    if head := (state.get("cache") or {}).get("head"):
+        data["head"] = head  # the commit the plan was made on, so --from-session can refuse a moved HEAD
     for key in ("chosen", "plan_edit", "branch_name"):
         if state.get(key):
             data["branch" if key == "branch_name" else key] = state[key]

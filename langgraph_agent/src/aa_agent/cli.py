@@ -20,7 +20,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from . import prompt, session, tools
-from .graph import build_graph
+from .graph import CAPS, build_graph, clean_approaches
 from .stages import DEFAULT_MODEL, NAMES, make_run_stage
 
 
@@ -161,7 +161,8 @@ def _drive(graph, config, plan_out: str | None, ask: prompt.Ask) -> int:
             details = None
             if pause["kind"] == "drift":
                 _print_changes(snap)
-                details = functools.partial(tools.diff_text, snap.values["repo"])
+                baseline = snap.values.get("baseline_dirty", {})
+                details = functools.partial(tools.diff_text, snap.values["repo"], baseline)
             picked = decision = prompt.ask_decision(pause, ask, sys.stdout, details)
             choice = edit = None
         if picked is None:
@@ -176,9 +177,10 @@ def _drive(graph, config, plan_out: str | None, ask: prompt.Ask) -> int:
 def _seed_from_session(graph, config, args) -> int | None:
     """Start at the [P] gate from a session the interactive skill wrote. Returns an exit code on error."""
     repo = str(Path(args.repo).resolve())
-    data = session.read(repo)
-    if not data or not data.get("approaches"):
-        return _fail(f"no .aa/current_session.json with approaches in {repo}")
+    data = session.read(repo) or {}
+    approaches = clean_approaches(data.get("approaches"))
+    if not data.get("task") or not approaches:
+        return _fail(f"no .aa/current_session.json with a task and approaches in {repo}")
     if data.get("status") not in (None, "in_progress", "awaiting_approval"):
         return _fail(f"session status is {data['status']!r}; only a session waiting at [P] can be continued")
     if data.get("chosen"):
@@ -188,13 +190,21 @@ def _seed_from_session(graph, config, args) -> int | None:
         )
     if args.task and args.task != data["task"]:
         return _fail(f"session is for {data['task']!r}, not {args.task!r}")
+    head = data.get("head") or ""
+    if not head:
+        print("note: the session doesn't record the commit its plan was made on, so a moved HEAD can't be "
+              "detected; assuming the current one", file=sys.stderr)
+    elif head != (now := tools.git_head(repo)):
+        return _fail(f"HEAD moved since the plan was made ({head[:12]} → {now[:12] or 'none'}); "
+                     "check out the planned commit or make a new plan")
     args.task = data["task"]
     plan = "\n".join(f"[{a['id']}] {a.get('title', '')}  files: {', '.join(a.get('files', []))}"
-                     for a in data["approaches"])
+                     for a in approaches)
+    tier = {"tier_assigned": data["tier"]} if data.get("tier") in CAPS else {}  # [I]'s tier, not a --tier
     graph.update_state(config, {
-        **_payload(args, repo), "approaches": data["approaches"], "tier": args.tier or data.get("tier"),
+        **_payload(args, repo), **tier, "approaches": approaches,
         "outputs": {"P": f"(plan from the interactive session)\n{plan}"}, "last_stage": "P",
-        "cache": {"status": "SESSION", "head": tools.git_head(repo), "changed": []},
+        "cache": {"status": "SESSION", "head": head or tools.git_head(repo), "changed": []},
         "session_log": data.get("stage_log", []),
     }, as_node="plan")
     return None
@@ -213,9 +223,15 @@ def main(argv=None, run_stage=None, ask: prompt.Ask | None = None) -> int:
     try:
         return _main(argv, run_stage, ask, running)
     except BaseException as error:
-        if running and (snap := running["graph"].get_state(running["config"])).next:
+        if running:
             thread = running["config"]["configurable"]["thread_id"]
-            print(f"\nstatus=interrupted thread={thread}\n{_retry_hint(snap, thread)}", flush=True)
+            try:
+                snap = running["graph"].get_state(running["config"])
+                hint = _retry_hint(snap, thread) if snap.next else None
+            except Exception as state_error:  # e.g. the checkpoint db is what failed; keep the original error
+                hint = f"couldn't read the checkpoint to say how to continue: {state_error}"
+            if hint:
+                print(f"\nstatus=interrupted thread={thread}\n{hint}", flush=True)
         if isinstance(error, KeyboardInterrupt):
             return 130
         raise

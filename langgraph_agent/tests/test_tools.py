@@ -1,4 +1,5 @@
 import subprocess
+import time
 
 import pytest
 
@@ -187,11 +188,30 @@ def test_diff_stats_is_conservative_when_baseline_blob_is_missing(repo):
 
 
 def test_diff_text_shows_tracked_and_untracked_changes(repo):
-    assert tools.diff_text(str(repo)) == "(no changes)\n"
+    assert tools.diff_text(str(repo), {}) == "(no changes)\n"
     (repo / "a.txt").write_text("one\n2\n")
-    (repo / "new.txt").write_text("x\n")
+    (repo / "new file.txt").write_text("x\n")
     (repo / ".aa").mkdir()
     (repo / ".aa" / "context.md").write_text("ignored\n")
-    text = tools.diff_text(str(repo))
-    assert "-two\n+2" in text and "new files (untracked):\n  new.txt\n" in text and "context.md" not in text
-    assert tools.diff_by_file(str(repo), {}) == {"a.txt": 1, "new.txt": 1}
+    text = tools.diff_text(str(repo), {})
+    assert "-two\n+2" in text and "new files (untracked):\n  new file.txt\n" in text and "context.md" not in text
+    assert tools.diff_by_file(str(repo), {}) == {"a.txt": 1, "new file.txt": 1}
+
+
+def test_diff_text_leaves_out_edits_made_before_e(repo):
+    (repo / "a.txt").write_text("one\nmine\n")  # the human's own uncommitted edit
+    (repo / "b.txt").write_text("theirs\n")
+    baseline = tools.snapshot_dirty(str(repo))
+    assert tools.diff_text(str(repo), baseline) == "(no changes)\n"
+    (repo / "a.txt").write_text("one\nmine\nE's line\n")
+    text = tools.diff_text(str(repo), baseline)
+    assert "--- a.txt (before [E])" in text and "+E's line" in text
+    assert "-two" not in text and "b.txt" not in text
+
+
+def test_check_timeout_kills_the_whole_process_group(tmp_path):
+    marker = tmp_path / "marker"
+    # the shell starts a grandchild that would touch the marker after the timeout
+    code, _ = tools._run_check_process(["sh", "-c", f"(sleep 1; touch '{marker}') & wait"], tmp_path, timeout=0.3)
+    time.sleep(1.5)
+    assert code is None and not marker.exists()

@@ -56,3 +56,17 @@ def test_ask_decision(answers, expected):
     out = io.StringIO()
     assert ask_decision({"kind": "budget", "reason": "⚠ over budget"}, scripted(*answers), out) == expected
     assert "⚠ over budget" in out.getvalue()
+
+
+FIVE = [{"id": i, "title": i, "files": []} for i in "ABCDE"]
+
+
+@pytest.mark.parametrize("answers,expected", [
+    (["E"], {"choice": "E", "edit": ""}),  # an approach id wins over the edit key
+    (["edit", "e", "smaller"], {"choice": "E", "edit": "smaller"}),
+    (["quit"], None),
+])
+def test_ask_plan_approach_e_is_choosable(answers, expected):
+    questions, ask = [], scripted(*answers)
+    assert ask_plan(FIVE, lambda q: questions.append(q) or ask(q), io.StringIO()) == expected
+    assert "edit to edit, q to quit" in questions[0]
