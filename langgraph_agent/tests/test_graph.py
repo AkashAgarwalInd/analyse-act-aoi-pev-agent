@@ -380,7 +380,8 @@ def test_cli_interactive_quit_leaves_the_thread_paused(tmp_path, monkeypatch, ca
     assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers("q")) == 0
     assert "aa-agent resume --thread t --choice" in capsys.readouterr().out
     assert cli.main(["resume", "--thread", "t", "-i", *base], run_stage=stub, ask=answers("A")) == 0
-    assert "status=done" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "[P] " in out and "status=done" in out
     assert stub.calls == ["I", "P", "E", "V"]
 
 
@@ -390,7 +391,7 @@ def test_cli_interactive_is_off_without_a_terminal(tmp_path, monkeypatch, capsys
     base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
     assert cli.main(["run", "t", "-i", *base], run_stage=Stub()) == 0
     captured = capsys.readouterr()
-    assert "interactive off" in captured.err and "status=awaiting_approval" in captured.out
+    assert "interactive off: stdin is not a terminal" in captured.err and "status=awaiting_approval" in captured.out
 
 
 def test_cli_interactive_uses_input_in_a_terminal(tmp_path, monkeypatch, capsys):
@@ -404,6 +405,23 @@ def test_cli_interactive_uses_input_in_a_terminal(tmp_path, monkeypatch, capsys)
     monkeypatch.setenv("CI", "true")
     assert cli.main(["run", "t2", "-i", "--thread", "t2", *base], run_stage=Stub()) == 0
     assert "status=awaiting_approval" in capsys.readouterr().out
+
+
+def test_cli_interactive_resume_does_not_drop_an_edit(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", *base], run_stage=stub) == 0
+    assert cli.main(["resume", "--thread", "t", "-i", "--edit", "x", *base], run_stage=stub, ask=answers()) == 2
+    assert "pass --choice" in capsys.readouterr().err
+
+
+def test_cli_interactive_from_session(tmp_path, capsys):
+    session.write({"repo": str(tmp_path), "task": "fix it", "approaches": APPROACHES}, "awaiting_approval")
+    stub = Stub()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "--from-session", "-i", *base], run_stage=stub, ask=answers("")) == 0
+    assert stub.calls == ["E", "V"] and session.read(str(tmp_path))["chosen"] == "A"
 
 
 def test_cli_interactive_refuses_when_head_moved(tmp_path, monkeypatch, capsys):

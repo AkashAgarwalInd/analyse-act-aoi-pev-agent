@@ -86,7 +86,7 @@ Reply y to apply, or "full" for the full AOI-PEV run.
 
 ## Gates (every place the run waits for the human)
 
-Always print the text first: the full report and the usual reply line (`Reply A or B…`, `Reply y…`, `continue?`). Then, **if the AskUserQuestion tool is available**, call it once so the human can click instead of typing, and end the turn. If the tool isn't available, or the call is denied or fails, just end the turn; the text reply works as before.
+Always print the text first: the full report and the usual reply line (`Reply A or B…`, `Reply y…`, `continue?`). Then, **if the AskUserQuestion tool is available**, call it once so the human can click instead of typing. Its answer is the human's reply: act on it in this same turn exactly as if they had typed it. If the tool isn't available, or the call is denied, fails or comes back without an answer, end the turn and wait for the typed reply as before. Never call it again for the same gate, and never treat a missing answer as approval.
 
 | Gate | header | options (recommended first, its label ending in "(Recommended)") | preview |
 |---|---|---|---|
@@ -95,7 +95,7 @@ Always print the text first: the full report and the usual reply line (`Reply A 
 | Drift ([E]) | `Drift` | `Continue`, `Stop and hand off` | what drifted: the extra files, LOC or scope |
 | Over budget | `Budget` | `Continue`, `Stop` | stage, tokens used vs budget |
 
-An option means the same as the typed reply (`A`, `y`, `full`, `continue`, `stop`). Free text ("Other") at [P] is a plan edit: record it as `plan_edit`, choose the approach it names (else the recommended one), and echo the edited approach in one line before [E]. Free text at any other gate is read as a typed reply. Clicking is approval for rule 1; nothing changes before it.
+An option means the same as the typed reply (`A`, `y`, `full`, `continue`, `stop`). Free text ("Other") at [P] that is just an approach id (`C`, `b`) chooses that approach, including one beyond the four shown. Any other free text is a plan edit: record it as `plan_edit`, choose the approach it names (else the recommended one), and echo the edited approach in one line before [E]. If an edit adds files, LOC or a dependency the approach didn't have, show the changed approach and ask again instead of executing. Free text at any other gate is read as a typed reply. Clicking is approval for rule 1; nothing changes before it.
 
 ## Stage banner (print at the start of every stage)
 

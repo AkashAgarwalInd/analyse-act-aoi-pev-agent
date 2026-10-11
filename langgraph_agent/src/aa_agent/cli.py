@@ -226,10 +226,12 @@ def main(argv=None, run_stage=None, ask: prompt.Ask | None = None) -> int:
     if not getattr(args, "interactive", False):
         ask = None
     elif ask is None:
-        if sys.stdin.isatty() and not os.environ.get("CI"):
-            ask = input
+        if os.environ.get("CI"):
+            print("interactive off: CI is set", file=sys.stderr)
+        elif not sys.stdin.isatty():
+            print("interactive off: stdin is not a terminal", file=sys.stderr)
         else:
-            print("interactive off: not a terminal", file=sys.stderr)
+            ask = input
     if args.cmd == "run":
         if not args.task and not args.from_session:
             return _fail("give a task, or --from-session")
@@ -258,8 +260,10 @@ def main(argv=None, run_stage=None, ask: prompt.Ask | None = None) -> int:
             return _fail(f"thread {args.thread!r} is not paused")
         if error := _head_moved(snap):
             return _fail(error)
-        if ask and not (args.choice or args.decision):
-            return _drive(graph, config, args.plan_out, ask)  # ask for this pause too
+        if ask and not (args.choice or args.decision or args.edit):
+            if _pause(snap)["kind"] == "plan":  # the run that stopped here printed the report; show it again
+                print(f"\n━━ [P] {NAMES['P']} ━━\n{snap.values['outputs'].get('P', '')}", flush=True)
+            return _drive(graph, config, args.plan_out, ask)
         answer, error = _answer(snap, args.choice, args.edit, args.decision)
         if error:
             return _fail(error)
