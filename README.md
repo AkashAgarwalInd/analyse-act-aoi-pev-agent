@@ -58,6 +58,14 @@ Copy [`adapters/codex/AGENTS.md`](adapters/codex/AGENTS.md) into your repo root.
 
 Copy [`adapters/cursor/analyse-act.mdc`](adapters/cursor/analyse-act.mdc) to `.cursor/rules/`, then mention `@analyse-act` in chat.
 
+### GitHub Copilot
+
+Copy [`adapters/copilot/copilot-instructions.md`](adapters/copilot/copilot-instructions.md) to `.github/copilot-instructions.md` in your repo. If that file already exists, append it. Copilot loads these instructions on every request, but the workflow only runs when you ask for "analyse-act" or "AOI-PEV".
+
+### Aider
+
+Copy [`adapters/aider/CONVENTIONS.md`](adapters/aider/CONVENTIONS.md) into your repo and load it read-only, either with `aider --read CONVENTIONS.md` or by adding `read: CONVENTIONS.md` to `.aider.conf.yml`.
+
 ## Usage
 
 The examples use the manual-install name; with the plugin, write `/analyse-act:analyse-act`.
@@ -113,7 +121,7 @@ skills/analyse-act/
   references/            per-stage instructions, loaded only when that stage runs
   schemas/               JSON schemas for .aa/ files
   scripts/aa-cache.sh    cache status check (--stamp records a scan)
-adapters/                Codex + Cursor versions, generated from adapters/src/workflow.md
+adapters/                Codex, Cursor, Copilot + Aider versions, generated from adapters/src/workflow.md
 scripts/build-adapters.sh  regenerates adapters/ (CI fails on drift)
 tests/                   cache-script tests, e2e smoke test, fixture repo
 docs/examples/           sample walkthrough + sample .aa/ files

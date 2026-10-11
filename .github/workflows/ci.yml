@@ -26,7 +26,7 @@ jobs:
       - name: adapters in sync with adapters/src/workflow.md
         run: |
           sh scripts/build-adapters.sh
-          git diff --exit-code adapters/
+          git status --porcelain adapters/ | tee /dev/stderr | (! grep -q .)
 
       - name: plugin manifest
         run: |
