@@ -42,7 +42,7 @@ check "no source edits"            'git -C "$work/repo" diff --quiet'
 echo "run 3: trivial typo"
 run '/analyse-act:analyse-act "fix the typo sesions in src/sessionCleanup.js"' run3.txt
 check "printed [F] banner"         'grep -q "\[F\] FAST PATH" "$work/run3.txt"'
-check "asked for y"                'grep -q "Reply y" "$work/run3.txt"'
+check "asked for y"                'grep -Eq "Reply \**y" "$work/run3.txt"'
 check "skipped [P]"                '! grep -q "\[P\] PLAN" "$work/run3.txt"'
 check "no source edits"            'git -C "$work/repo" diff --quiet'
 
