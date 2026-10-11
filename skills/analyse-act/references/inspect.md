@@ -35,4 +35,4 @@ Tier: M — 2 files, touches shared auth middleware
 
 Write `task`, `tier`, `acceptance_criteria`, `rca`, `blast_radius` to `.aa/current_session.json` (schema: `schemas/session.schema.json`) and append to `stage_log`.
 
-If `--analyse-only`: stop here with the summary. Otherwise → [P].
+If `--analyse-only`: stop here with the summary (the `[I] INSPECT` banner and stage format still apply). Otherwise → [P].

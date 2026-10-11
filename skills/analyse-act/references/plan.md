@@ -38,4 +38,4 @@ Save `approaches` to `.aa/current_session.json`, append to `stage_log`.
 
 ## ⛔ STOP
 
-End your turn here. Do not write code. Wait for the human's choice. When they reply, record `chosen` (and any edits they made) in the session, then → [E].
+End your turn here. Do not write code. Wait for the human's choice. When they reply, record `chosen` in the session, plus `plan_edit` (their changes, in their words) if they edited the plan, then → [E].

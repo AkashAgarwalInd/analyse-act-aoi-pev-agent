@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "analyse-act-agent"
+version = "0.2.0"
+description = "Headless Analyse-Act (AOI-PEV) runner for CI, built on LangGraph"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+  "langgraph>=1.0,<2",
+  "langgraph-checkpoint-sqlite>=3.0,<4",
+  "langchain-anthropic>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.15", "jsonschema>=4"]
+
+[project.scripts]
+aa-agent = "aa_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aa_agent"]
+
+# Stage prompts come from the skill itself, so the two never drift. hatch_build.py bundles
+# ../skills/analyse-act into both the sdist and the wheel.
+[tool.hatch.build.hooks.custom]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

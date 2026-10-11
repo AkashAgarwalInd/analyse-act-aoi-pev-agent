@@ -8,6 +8,10 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # "shell: bash" means bash -eo pipefail; the default (bash -e) lets `cmd | tee` hide cmd's failure
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -15,7 +19,10 @@ jobs:
         run: shellcheck skills/analyse-act/scripts/*.sh scripts/*.sh tests/*.sh tests/fixtures/*.sh
 
       - name: cache script tests
-        run: sh tests/aa-cache.test.sh
+        run: |
+          pipx install check-jsonschema
+          sh tests/aa-cache.test.sh | tee out.txt
+          if grep -q '^skip' out.txt; then echo "a check was skipped"; exit 1; fi
 
       - name: validate sample .aa files against schemas
         run: |
@@ -26,9 +33,25 @@ jobs:
       - name: adapters in sync with adapters/src/workflow.md
         run: |
           sh scripts/build-adapters.sh
-          git diff --exit-code adapters/
+          changes=$(git status --porcelain adapters/)
+          if [ -n "$changes" ]; then echo "$changes"; echo "adapters/ is stale: run sh scripts/build-adapters.sh"; exit 1; fi
 
       - name: plugin manifest
         run: |
           npm install -g @anthropic-ai/claude-code
           claude plugin validate .
+
+  langgraph-agent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: langgraph_agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - run: ruff check .
+      - run: pytest -q

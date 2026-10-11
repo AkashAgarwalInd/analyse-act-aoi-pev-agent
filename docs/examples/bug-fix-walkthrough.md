@@ -167,4 +167,4 @@ status=DELTA
 reason=3-files-changed
 ```
 
-Only the 3 changed files are rescanned, so [A] and [O] are cheap. Once `cache_meta.json` is updated, the next run reports `status=HIT`.
+Only the 3 changed files are rescanned, so [A] and [O] are cheap. Once `aa-cache.sh --stamp` records the new commit, the next run reports `status=HIT`.

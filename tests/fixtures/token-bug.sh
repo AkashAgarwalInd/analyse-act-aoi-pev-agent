@@ -25,6 +25,7 @@ J
 cat > src/sessionCleanup.js <<'J'
 import { isExpired } from './token.js';
 
+// Drop sesions whose token has expired.
 export function cleanup(sessions, now) {
   return sessions.filter((s) => !isExpired(s, now));
 }

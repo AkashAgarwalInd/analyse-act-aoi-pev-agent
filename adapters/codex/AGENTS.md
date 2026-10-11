@@ -1,6 +1,8 @@
 # Analyse-Act (AOI-PEV) workflow
 
-**When to use:** only when the user asks for it, by saying "analyse-act", "AOI-PEV", "/analyse-act" or "plan first". Don't apply it on your own to other tasks. If it is invoked for a trivial change (a typo, a rename, a one-line config tweak), say so and offer to just make the change.
+**When to use:** only when the user asks for it, by saying "analyse-act", "AOI-PEV", "/analyse-act" or "plan first". Don't apply it on your own to other tasks.
+
+**Fast path:** if the task is trivial (one file, ≤5 lines, no behaviour change beyond the literal ask: a typo, a local rename, a one-line config value; never a dependency bump) and the user didn't say "full", skip the stages. Print `━━ [F] FAST PATH ━━`, the `file:line` and the exact diff, end with `Reply y to apply, or "full" for the full AOI-PEV run.` and stop. On `y`, make the change and run only the targeted test or lint.
 
 Work in six stages. Print a banner at the start of each stage (`━━ [I] INSPECT · tier M ━━`) and finish each one with a 1–3 line summary and `→ next: [X]`. Keep output to tables, bullets and Mermaid diagrams.
 
@@ -47,6 +49,7 @@ Budgets are advisory. Stage shares: A 15%, O 20%, I 20%, P 10%, E 20%, V 15%. If
 - **STOP. Write no code until the human chooses.**
 
 ## [E] Execute: minimal diff
+- If the user asked for a branch, first run `git switch -c aa/<task-slug>` (append `-2` on a clash; warn and ask if unrelated uncommitted changes would carry over). Never commit or push.
 - Implement only the chosen approach, matching the existing style.
 - Stop and ask if you need an unplanned file, a new dependency, a public interface change, or more than 1.5× the planned LOC.
 - Do one self-review of the diff: imports and types, root cause addressed, edge cases, no debug code, no helper with fewer than 2 call sites. Fix what it finds once, with no second review loop.

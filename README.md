@@ -58,6 +58,14 @@ Copy [`adapters/codex/AGENTS.md`](adapters/codex/AGENTS.md) into your repo root.
 
 Copy [`adapters/cursor/analyse-act.mdc`](adapters/cursor/analyse-act.mdc) to `.cursor/rules/`, then mention `@analyse-act` in chat.
 
+### GitHub Copilot
+
+Copy [`adapters/copilot/copilot-instructions.md`](adapters/copilot/copilot-instructions.md) to `.github/copilot-instructions.md` in your repo. If that file already exists, append it. Copilot loads these instructions on every request, but the workflow only runs when you ask for "analyse-act" or "AOI-PEV".
+
+### Aider
+
+Copy [`adapters/aider/CONVENTIONS.md`](adapters/aider/CONVENTIONS.md) into your repo and load it read-only, either with `aider --read CONVENTIONS.md` or by adding `read: CONVENTIONS.md` to `.aider.conf.yml`.
+
 ## Usage
 
 The examples use the manual-install name; with the plugin, write `/analyse-act:analyse-act`.
@@ -68,11 +76,43 @@ The examples use the manual-install name; with the plugin, write `/analyse-act:a
 /analyse-act "add CSV export" --tier L                 # force a tier
 /analyse-act "..." --from P                            # resume from a stage
 /analyse-act "..." --refresh                           # ignore the cache
+/analyse-act "fix the typo in the README"              # trivial: fast path, one y/n gate
+/analyse-act "..." --full                              # never take the fast path
+/analyse-act "..." --branch                            # work on a new aa/<task-slug> branch
 ```
+
+**Fast path.** A trivial change (one file, 5 lines or fewer, no behaviour change beyond the ask, never a dependency bump) skips the stages. You get the exact diff and reply `y` to apply it. Nothing is edited before you approve, on either path.
 
 See a full sample run in [docs/examples/bug-fix-walkthrough.md](docs/examples/bug-fix-walkthrough.md).
 
-## Complexity tiers
+## Headless / CI (LangGraph)
+
+[`langgraph_agent/`](langgraph_agent) is a headless runner built on LangGraph. Its stage prompts are this skill's own reference files, which are bundled into the package. A run checkpoints after every stage to `.aa/agent.sqlite`, and the [P] gate is a LangGraph `interrupt()`, so the approval can come from a later CI job.
+
+```sh
+pip install "analyse-act-agent @ git+https://github.com/AkashAgarwalInd/analyse-act-aoi-pev-agent#subdirectory=langgraph_agent"
+export ANTHROPIC_API_KEY=...
+aa-agent run "users get logged out a minute early" --check "npm test" --plan-out plan.md   # stops at [P]
+aa-agent resume --thread users-get-logged-out-a-minute-early --choice A  # [E] then [V]
+aa-agent resume --thread users-get-logged-out-a-minute-early --choice A --edit "also cover refresh tokens"
+aa-agent resume --thread users-get-logged-out-a-minute-early --decision continue  # after a budget/drift pause
+aa-agent status --thread users-get-logged-out-a-minute-early
+aa-agent run --from-session   # continue at [P] from a session the interactive skill left there
+```
+
+- The agent's file tools reject paths outside the repo and inside `.git/`. The model can only write under `.aa/` until [E]. Its git tool takes read-only subcommands, and only options from an allowlist, because options such as `--no-index` and `--contents` read files outside the repo.
+- [E] and [V] can run **only** the commands you pass with `--check`, with no shell. The model may append test files or test names, but not options or paths outside the repo. The model writes `.aa/`, so a command recorded there is never trusted. Without `--check`, the checks are reported as manual.
+- In `.aa/`, the model can write only `context.md`, `context.<package>.md` and `schema_cache.json`, and only before [E]. The checkpoint database, cache stamp and session files belong to the runner.
+- The cache works as it does in the skill: HIT skips [A] and [O], DELTA rescans only the changed files (or does a full rescan if a manifest changed), and `--refresh` forces a full scan. The runner stamps the cache itself.
+- `resume` refuses if HEAD has moved since the plan was made, or if the plan had no parseable approaches. In that case the run ends `handed_off`.
+- **Pauses.** The runner enforces the skill's rules mechanically. Each stage's tokens are measured: what it read plus what it wrote, not the history re-sent on every call. A stage that runs more than 1.5× its tier budget pauses with `status=awaiting_budget_decision`. After [E], the diff is checked against the plan and the tier caps. The same check runs again after [V]'s auto-fix retry, but asks only about new problems. An unplanned file, a plan that lists no files, more than 1.5× the planned LOC, a cap breach the plan didn't flag, or `DRIFT` from the model pauses with `status=awaiting_drift_decision`. Files that already had uncommitted changes are measured from their state before [E]. Resume with `--decision continue` or `stop`.
+- **Sessions.** `.aa/current_session.json` is shared with the interactive skill. A headless run can be finished with `/analyse-act --from P`, and an interactive plan with `aa-agent run --from-session`.
+- The runner never commits or pushes. `--branch` creates `aa/<task-slug>` before [E].
+- [V] gets one auto-fix retry. If it still fails, the run ends with `status=handed_off` and exit code 1.
+- [docs/examples/github-actions.yml](docs/examples/github-actions.yml) runs one dispatch per step: start with a task, then continue with a choice (plus an optional edit) or with a decision, as often as the run pauses. Each dispatch saves the checkpoint and the uncommitted edits for the next one. The diff is always uploaded as a patch.
+- Add `.aa/agent.sqlite` to `.gitignore`.
+
+
 
 | Tier | Max files | Max net LOC | Token budget (guide) | Time (guide) | Notes |
 |---|---|---|---|---|---|
@@ -97,7 +137,7 @@ Created in **your** repo, at its root.
 | `current_session.json` | State of the current task, used for resuming | No. Add it to `.gitignore` |
 | `sessions/` | Archived sessions from earlier tasks | No. Add it to `.gitignore` |
 
-Cache status comes from [`aa-cache.sh`](skills/analyse-act/scripts/aa-cache.sh), which needs only POSIX `sh` and git:
+Cache status comes from [`aa-cache.sh`](skills/analyse-act/scripts/aa-cache.sh), which needs only POSIX `sh` and git. After a scan, `aa-cache.sh --stamp` writes `cache_meta.json` and `dirty_at_scan.txt`, so the hash and timestamp come from git and the clock, not from the model:
 - **HIT**: nothing changed, so Analyse and Observe are skipped.
 - **DELTA**: 5 or fewer files changed, so only those files are rescanned.
 - **MISS**: a full scan runs.
@@ -112,11 +152,12 @@ skills/analyse-act/
   SKILL.md               entry point (flow, gates, tiers, rules)
   references/            per-stage instructions, loaded only when that stage runs
   schemas/               JSON schemas for .aa/ files
-  scripts/aa-cache.sh    cache status check
-adapters/                Codex + Cursor versions, generated from adapters/src/workflow.md
+  scripts/aa-cache.sh    cache status check (--stamp records a scan)
+adapters/                Codex, Cursor, Copilot + Aider versions, generated from adapters/src/workflow.md
 scripts/build-adapters.sh  regenerates adapters/ (CI fails on drift)
 tests/                   cache-script tests, e2e smoke test, fixture repo
-docs/examples/           sample walkthrough + sample .aa/ files
+langgraph_agent/         headless LangGraph runner (aa-agent CLI) for CI
+docs/examples/           sample walkthrough, sample .aa/ files, GitHub Actions example
 ```
 
 ## Development
@@ -124,12 +165,12 @@ docs/examples/           sample walkthrough + sample .aa/ files
 ```sh
 sh tests/aa-cache.test.sh     # cache script tests (fast, no LLM)
 sh scripts/build-adapters.sh  # after editing adapters/src/workflow.md
-sh tests/e2e-smoke.sh         # runs the real skill headlessly twice; costs tokens
+sh tests/e2e-smoke.sh         # runs the real skill headlessly 3 times; costs tokens
+(cd langgraph_agent && pip install -e '.[dev]' && ruff check . && pytest -q)  # runner tests, no LLM
 ```
 
 ## Roadmap
 
-- **v2:** an optional headless runner (LangGraph state graph with `interrupt()` at the Plan gate) for CI and batch use.
 - Measured token and latency comparisons with and without the cache.
 - A `claude plugin eval` suite. This is blocked for now: the eval sandbox can't run git on macOS, and the skill needs it.
 

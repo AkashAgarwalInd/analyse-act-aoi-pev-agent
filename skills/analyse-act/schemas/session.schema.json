@@ -45,6 +45,8 @@
       }
     },
     "chosen": { "type": "string" },
+    "branch": { "type": "string", "description": "Branch created by --branch at the start of [E]" },
+    "plan_edit": { "type": "string", "description": "The human's edits to the chosen approach, given at the [P] gate" },
     "status": { "enum": ["in_progress", "awaiting_approval", "done", "handed_off"] },
     "stage_log": {
       "type": "array",
