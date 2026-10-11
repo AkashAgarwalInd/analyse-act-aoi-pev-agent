@@ -130,11 +130,18 @@ def snapshot_dirty(repo: str) -> dict[str, str]:
 
 
 def diff_stats(repo: str, baseline: dict[str, str]) -> tuple[list[str], int]:
-    """Files [E] changed and their LOC: changes vs HEAD, except that a file in `baseline` (dirty before [E])
+    """Files [E] changed and their total LOC (see diff_by_file)."""
+    stats = diff_by_file(repo, baseline)
+    files = sorted(stats)
+    return files, sum(stats[p] for p in files)
+
+
+def diff_by_file(repo: str, baseline: dict[str, str]) -> dict[str, int]:
+    """LOC per file [E] changed: changes vs HEAD, except that a file in `baseline` (dirty before [E])
     is measured against its baseline content instead, and left out only if [E] didn't touch it."""
     root = Path(repo)
     if not git_head(repo):
-        return [], 0
+        return {}
     stats = _changed(root)
     for path, old in baseline.items():
         new = _blob(root, path)
@@ -150,8 +157,17 @@ def diff_stats(repo: str, baseline: dict[str, str]) -> tuple[list[str], int]:
             stats[path] = _lines(root / path)
         else:  # [E] deleted a file that was dirty before
             stats[path] = len(_run(["git", "cat-file", "-p", old], root).stdout.splitlines())
-    files = sorted(stats)
-    return files, sum(stats[p] for p in files)
+    return stats
+
+
+def diff_text(repo: str) -> str:
+    """The working-tree diff vs HEAD (minus .aa/) plus untracked files, for a human deciding at a drift pause."""
+    root, spec = Path(repo), ["--", ".", ":(exclude).aa"]
+    text = _run(["git", "diff", "HEAD", *spec], root).stdout
+    untracked = _run(["git", "ls-files", "--others", "--exclude-standard", *spec], root).stdout.split()
+    if untracked:
+        text += "\nnew files (untracked):\n" + "".join(f"  {path}\n" for path in untracked)
+    return text or "(no changes)\n"
 
 
 # --- model-facing tools ---

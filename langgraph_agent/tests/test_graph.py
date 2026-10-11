@@ -1,5 +1,8 @@
 """Graph routing with a stubbed stage runner: no LLM, no network."""
 
+import subprocess
+from pathlib import Path
+
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -432,6 +435,79 @@ def test_cli_interactive_refuses_when_head_moved(tmp_path, monkeypatch, capsys):
     assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers()) == 2  # refused before asking
     assert "HEAD moved" in capsys.readouterr().err
     assert stub.calls == ["I", "P"]
+
+
+class Flaky(Stub):
+    """Raises `error` the first time `stage` runs, like a crash or Ctrl-C in the middle of a stage."""
+
+    def __init__(self, stage, error, **kw):
+        super().__init__(**kw)
+        self.fail_at, self.error = stage, error
+
+    def __call__(self, stage, state):
+        if stage == self.fail_at and self.error:
+            error, self.error = self.error, None
+            raise error
+        return super().__call__(stage, state)
+
+
+def test_cli_crashed_stage_can_be_retried(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Flaky("P", RuntimeError("API overloaded"))
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    with pytest.raises(RuntimeError):
+        cli.main(["run", "t", *base], run_stage=stub)
+    assert cli.main(["status", "--thread", "t", *base]) == 1
+    out = capsys.readouterr().out
+    assert "status=interrupted thread=t (stopped inside plan)" in out and "aa-agent resume --thread t" in out
+    assert cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub) == 2  # nothing to choose yet
+    assert cli.main(["resume", "--thread", "t", *base], run_stage=stub) == 0
+    assert "status=awaiting_approval" in capsys.readouterr().out
+    assert stub.calls == ["I", "P"]  # [I] isn't re-run
+
+
+def test_cli_ctrl_c_exits_130_and_can_be_retried(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Flaky("I", KeyboardInterrupt())
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers()) == 130
+    assert "interrupted" in capsys.readouterr().err
+    assert cli.main(["resume", "--thread", "t", "-i", *base], run_stage=stub, ask=answers("A")) == 0
+    assert stub.calls == ["I", "P", "E", "V"]
+
+
+def test_cli_does_not_retry_a_half_done_execute(tmp_path, monkeypatch, capsys):
+    hit_cache(monkeypatch)
+    stub = Flaky("E", RuntimeError("boom"))
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "a.sqlite")]
+    assert cli.main(["run", "t", *base], run_stage=stub) == 0
+    with pytest.raises(RuntimeError):
+        cli.main(["resume", "--thread", "t", "--choice", "A", *base], run_stage=stub)
+    assert cli.main(["resume", "--thread", "t", *base], run_stage=stub) == 2
+    assert "stopped while editing" in capsys.readouterr().err
+    assert stub.calls == ["I", "P"]
+
+
+class EditsUnplannedFile(Stub):
+    def __call__(self, stage, state):
+        if stage == "E":
+            (Path(state["repo"]) / "b.js").write_text("one\ntwo\n")
+        return super().__call__(stage, state)
+
+
+def test_cli_interactive_drift_shows_the_change_and_the_diff(tmp_path, monkeypatch, capsys):
+    git = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    (tmp_path / "a.js").write_text("x\n")
+    git("add", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    hit_cache(monkeypatch)
+    stub = EditsUnplannedFile()
+    base = ["--repo", str(tmp_path), "--db", str(tmp_path / "db.sqlite")]
+    assert cli.main(["run", "t", "-i", *base], run_stage=stub, ask=answers("A", "d", "c")) == 0
+    out = capsys.readouterr().out
+    assert "files not in the plan: b.js" in out and "  b.js  2 LOC" in out
+    assert "new files (untracked):\n  b.js" in out and "status=done" in out
 
 
 def test_written_session_matches_the_skill_schema(tmp_path):

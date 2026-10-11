@@ -60,16 +60,23 @@ def ask_plan(approaches: list[dict], ask: Ask, out: TextIO) -> dict | None:
     return None
 
 
-def ask_decision(pause: dict, ask: Ask, out: TextIO) -> str | None:
-    """"continue" or "stop" at a budget or drift pause, or None to quit."""
+def ask_decision(pause: dict, ask: Ask, out: TextIO, details: Callable[[], str] | None = None) -> str | None:
+    """"continue" or "stop" at a budget or drift pause, or None to quit. `details` (e.g. the full diff) is
+    shown on `d` and doesn't count as a bad answer."""
     print(f"\n{pause['reason']}", file=out)
-    for _ in range(TRIES):
-        answer = _read(ask, "[c]ontinue / [s]top / [q]uit: ")
+    question = f"[c]ontinue / [s]top{' / [d]iff' if details else ''} / [q]uit: "
+    tries = 0
+    while tries < TRIES:
+        answer = _read(ask, question)
         if answer is None or answer.lower() in ("q", "quit"):
             return None
+        if details and answer.lower() in ("d", "diff"):
+            print(details(), file=out)
+            continue
         if answer.lower() in ("c", "continue"):
             return "continue"
         if answer.lower() in ("s", "stop"):
             return "stop"
-        print("answer c, s or q", file=out)
+        print(f"answer c, s{', d' if details else ''} or q", file=out)
+        tries += 1
     return None

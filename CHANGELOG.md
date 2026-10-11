@@ -5,6 +5,8 @@
 - Clickable gates: in Claude Code, the [P] plan gate uses AskUserQuestion, so you can click an approach (with a preview of its files, LOC and risk) or type changes to the plan. The fast-path, drift and budget gates are clickable too. The text reply still works, and is what headless runs and the other editors use.
 - `aa-agent run -i` / `resume -i` answers each pause in the terminal and carries on in the same process. `q` leaves the thread paused. It turns itself off without a TTY or in CI.
 - `aa-agent resume --edit` at a budget or drift pause is now an error instead of being silently ignored.
+- At a drift pause, `-i` lists each changed file with its LOC, and `d` shows the full diff.
+- A stage that crashed or was stopped with Ctrl-C can be re-run with `aa-agent resume --thread <id>`; `status` reports it as `interrupted`. A crash during [E] is never retried, since its half-made edits would hide from the drift check. Ctrl-C exits 130 with a hint instead of a traceback.
 
 ## 0.2.0 — 2026-10-11
 

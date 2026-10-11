@@ -5,10 +5,12 @@
   aa-agent resume --thread users-get-logged-out-early --decision continue    # after a budget/drift pause
   aa-agent run "users get logged out early" --check "npm test" -i    # answer each pause in the terminal
   aa-agent status --thread users-get-logged-out-early
+  aa-agent resume --thread users-get-logged-out-early    # after a crash or Ctrl-C: retry the stage it stopped in
   aa-agent run --from-session      # continue at [P] from a session the interactive skill wrote
 """
 
 import argparse
+import functools
 import os
 import sqlite3
 import sys
@@ -84,6 +86,10 @@ def _report(graph, config, plan_out: str | None) -> int:
         print(f"status=awaiting_{pause['kind']}_decision thread={thread}")
         print(f"continue with: aa-agent resume --thread {thread} --decision <continue|stop>")
         return 0
+    if snap.next:
+        print(f"\nstatus=interrupted thread={thread} (stopped inside {', '.join(snap.next)})")
+        print(_retry_hint(snap, thread))
+        return 1
     status = snap.values.get("status", "unknown")
     if snap.values.get("note"):
         print(f"\nnote: {snap.values['note']}")
@@ -94,6 +100,17 @@ def _report(graph, config, plan_out: str | None) -> int:
 def _fail(message: str) -> int:
     print(message, file=sys.stderr)
     return 2
+
+
+# Re-running these would snapshot their own half-made edits as "already dirty" and miss them in the drift check.
+EDITING_NODES = ("execute", "fix")
+
+
+def _retry_hint(snap, thread: str) -> str:
+    if set(snap.next) & set(EDITING_NODES):
+        return ("it stopped while editing, so it can't be retried safely: check `git diff`, then finish with "
+                "/analyse-act --from E (or discard the edits and start a new run)")
+    return f"retry the stage with: aa-agent resume --thread {thread}"
 
 
 def _head_moved(snap) -> str | None:
@@ -133,7 +150,13 @@ def _drive(graph, config, plan_out: str | None, ask: prompt.Ask) -> int:
             picked = prompt.ask_plan(snap.values.get("approaches", []), ask, sys.stdout)
             choice, edit, decision = (picked or {}).get("choice"), (picked or {}).get("edit"), None
         else:
-            picked = decision = prompt.ask_decision(pause, ask, sys.stdout)
+            details = None
+            if pause["kind"] == "drift":
+                repo = snap.values["repo"]
+                for path, loc in sorted(tools.diff_by_file(repo, snap.values.get("baseline_dirty", {})).items()):
+                    print(f"  {path}  {loc} LOC")
+                details = functools.partial(tools.diff_text, repo)
+            picked = decision = prompt.ask_decision(pause, ask, sys.stdout, details)
             choice = edit = None
         if picked is None:
             break
@@ -180,6 +203,14 @@ def _payload(args, repo: str) -> dict:
 
 
 def main(argv=None, run_stage=None, ask: prompt.Ask | None = None) -> int:
+    try:
+        return _main(argv, run_stage, ask)
+    except KeyboardInterrupt:
+        print("\ninterrupted. `aa-agent status --thread <id>` shows how to continue.", file=sys.stderr)
+        return 130
+
+
+def _main(argv, run_stage, ask) -> int:
     parser = argparse.ArgumentParser(prog="aa-agent", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -257,7 +288,15 @@ def main(argv=None, run_stage=None, ask: prompt.Ask | None = None) -> int:
 
     if args.cmd == "resume":
         if not _pause(snap):
-            return _fail(f"thread {args.thread!r} is not paused")
+            if not snap.next:
+                return _fail(f"thread {args.thread!r} is not paused")
+            if set(snap.next) & set(EDITING_NODES) or args.choice or args.decision or args.edit:
+                return _fail(f"thread {args.thread!r} was interrupted, not paused; {_retry_hint(snap, args.thread)}")
+            if error := _head_moved(snap):
+                return _fail(error)
+            print(f"retrying {', '.join(snap.next)}", flush=True)
+            _stream(graph, None, config)  # re-runs the node it stopped in, from the last checkpoint
+            return _drive(graph, config, args.plan_out, ask) if ask else _report(graph, config, args.plan_out)
         if error := _head_moved(snap):
             return _fail(error)
         if ask and not (args.choice or args.decision or args.edit):

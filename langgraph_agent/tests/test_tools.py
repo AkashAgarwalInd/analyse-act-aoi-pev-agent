@@ -184,3 +184,14 @@ def test_diff_stats_counts_reverting_a_dirty_file(repo):
 def test_diff_stats_is_conservative_when_baseline_blob_is_missing(repo):
     (repo / "a.txt").write_text("one\ntwo\n" + "x\n" * 300)
     assert tools.diff_stats(str(repo), {"a.txt": "0" * 40}) == (["a.txt"], 302)
+
+
+def test_diff_text_shows_tracked_and_untracked_changes(repo):
+    assert tools.diff_text(str(repo)) == "(no changes)\n"
+    (repo / "a.txt").write_text("one\n2\n")
+    (repo / "new.txt").write_text("x\n")
+    (repo / ".aa").mkdir()
+    (repo / ".aa" / "context.md").write_text("ignored\n")
+    text = tools.diff_text(str(repo))
+    assert "-two\n+2" in text and "new files (untracked):\n  new.txt\n" in text and "context.md" not in text
+    assert tools.diff_by_file(str(repo), {}) == {"a.txt": 1, "new.txt": 1}
