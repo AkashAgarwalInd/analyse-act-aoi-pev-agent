@@ -45,6 +45,7 @@
       }
     },
     "chosen": { "type": "string" },
+    "branch": { "type": "string", "description": "Branch created by --branch at the start of [E]" },
     "status": { "enum": ["in_progress", "awaiting_approval", "done", "handed_off"] },
     "stage_log": {
       "type": "array",

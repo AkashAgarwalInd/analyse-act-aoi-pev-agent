@@ -1,8 +1,9 @@
 #!/bin/sh
 # End-to-end smoke test: runs the real skill headlessly on a fixture repo.
-# Costs real tokens (~2 agent runs). Usage: sh tests/e2e-smoke.sh
+# Costs real tokens (~3 agent runs). Usage: sh tests/e2e-smoke.sh
 #   1. fresh repo, bug task   → cache MISS, .aa/ written, stops at [P], no source edits
 #   2. new task, --analyse-only → cache HIT, previous session archived, no source edits
+#   3. typo task              → fast path, stops at the y/n gate, no source edits
 # shellcheck disable=SC2016  # check() evals its single-quoted condition later, on purpose
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -36,6 +37,13 @@ check "cache HIT reported"         'grep -q "HIT" "$work/run2.txt"'
 check "skipped [A] banner"         '! grep -q "\[A\] ANALYSE" "$work/run2.txt"'
 check "old session archived"       'ls "$work/repo/.aa/sessions/"*.json >/dev/null 2>&1'
 check "stopped before [P]"         '! grep -q "\[P\] PLAN" "$work/run2.txt"'
+check "no source edits"            'git -C "$work/repo" diff --quiet'
+
+echo "run 3: trivial typo"
+run '/analyse-act:analyse-act "fix the typo sesions in src/sessionCleanup.js"' run3.txt
+check "printed [F] banner"         'grep -q "\[F\] FAST PATH" "$work/run3.txt"'
+check "asked for y"                'grep -q "Reply y" "$work/run3.txt"'
+check "skipped [P]"                '! grep -q "\[P\] PLAN" "$work/run3.txt"'
 check "no source edits"            'git -C "$work/repo" diff --quiet'
 
 if [ "$fails" -ne 0 ]; then

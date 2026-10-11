@@ -21,6 +21,8 @@ ANALYSE (understand)                 ACT (change)
 /analyse-act "<task>" --from P        # resume at a stage (A|O|I|P|E|V) using .aa/current_session.json
 /analyse-act "<task>" --tier S|M|L    # force complexity tier instead of auto-assigning
 /analyse-act "<task>" --refresh       # ignore cache, run [A] and [O] fully
+/analyse-act "<task>" --full          # never take the fast path, even for a trivial change
+/analyse-act "<task>" --branch        # create branch aa/<task-slug> at the start of [E]
 ```
 
 (Installed as a plugin, the command is `/analyse-act:analyse-act`.)
@@ -28,7 +30,7 @@ ANALYSE (understand)                 ACT (change)
 **This invocation:** `$ARGUMENTS`
 Parse it as: the task text (quoted or not) plus any flags above. If there is no task text and no `--from`, ask for the task before doing anything.
 
-A bare reply of `A`, `B`, … after the [P] gate means "approved, execute that approach".
+A bare reply of `A`, `B`, … after the [P] gate means "approved, execute that approach". A bare `y` after the fast-path gate means "apply that change"; `full` means "run all stages instead".
 
 ## Stage 0 — Cache check (always first)
 
@@ -48,7 +50,7 @@ It prints `status=HIT|DELTA|MISS`, `reason=`, `head=`, `cached=`, and `changed=<
 | DELTA | Read the cached files, rescan only the `changed=` files, patch the artifacts, update the hash. `reason=no-schema-cache` → run [O] only. Go to [I]. |
 | MISS  | Run [A] and [O] fully, write `.aa/`. |
 
-`--refresh` forces MISS.
+`--refresh` forces MISS. Before acting on the status, check the **Fast path** below: a trivial task skips scanning whatever the status.
 
 After any scan ([A]/[O] or a DELTA patch), record it with `sh "${CLAUDE_SKILL_DIR}/scripts/aa-cache.sh" --stamp .` — never hand-write `cache_meta.json` or `dirty_at_scan.txt`.
 
@@ -63,13 +65,31 @@ After any scan ([A]/[O] or a DELTA patch), record it with `sh "${CLAUDE_SKILL_DI
 
 Guess a tier from the task text and the cached context (one line, e.g. `tier S (pre-assessed): one-function bug`). It sets the budget for [A]/[O] and whether [O] can be skipped. [I] confirms or changes it with evidence.
 
+## Fast path (trivial changes)
+
+Right after the tier pre-assessment, decide whether the task is trivial. It is only if **all** hold:
+- one file, ≤5 changed lines;
+- no behaviour change beyond the literal ask: a typo, a rename local to one file, a patch/minor bump of an existing dependency, a one-line config value;
+- you can name the exact location without scanning the repo.
+
+If anything is uncertain, or `--full` is set, run the normal stages. Otherwise:
+
+```
+━━ [F] FAST PATH · cache HIT ━━
+Change: README.md:2 — "teh" → "the"
+<the exact diff>
+Reply y to apply, or "full" for the full AOI-PEV run.
+```
+
+**STOP** and wait. Don't run [A]/[O]/[I]/[P], don't write `.aa/` or a session file. On `y`: run [E] (with `--branch` if given) and [V] limited to targeted tests or lint, still one retry. On `full`: start at Stage 0 as a normal run.
+
 ## Stage banner (print at the start of every stage)
 
 ```
 ━━ [I] INSPECT · tier M · cache HIT · stage budget ~12k tok ━━
 ```
 
-This applies in every mode, including `--analyse-only` and `--from`: the banner is how the run (and the e2e test) reports cache status, so never fold a stage into a free-form answer.
+This applies in every mode, including the fast path, `--analyse-only` and `--from`: the banner is how the run (and the e2e test) reports cache status, so never fold a stage into a free-form answer.
 
 End every stage with a 1–3 line **Stage summary** and `→ next: [X]`. Keep stage output tight: tables, bullets, Mermaid diagrams — no essays.
 
@@ -100,12 +120,12 @@ Caps are defaults. Exceeding one is allowed **only** if the [P] matrix flags it 
 
 ## Non-negotiable rules
 
-1. **No code before approval.** [A]–[P] are read-only on source files (writing `.aa/` is fine).
+1. **No code before approval** — the human's [P] choice, or `y` at the fast-path gate. [A]–[P] are read-only on source files (writing `.aa/` is fine).
 2. **Root cause before solution.** [I] must name the cause with `file:line` evidence, or explicitly say it is unconfirmed and what would confirm it.
 3. **≥2 genuinely different approaches** at [P], one marked *(Recommended)*. "Do nothing / config-only" counts if real.
 4. **Simplest thing that works.** No new dependencies without explicit confirmation. No new helper/abstraction unless used at ≥2 call sites. No drive-by refactors or formatting changes.
 5. **One self-review pass** in [E]; **one auto-fix retry** in [V]. After that, stop looping — report and hand off a Manual Verification Checklist.
 6. **Drift = pause.** If execution needs files, behaviour or scope not in the approved plan, stop and ask before continuing.
-7. **Never commit, push, or edit `.gitignore`** unless the user asks.
+7. **Never commit, push, or edit `.gitignore`** unless the user asks. Create a branch only with `--branch` (see `references/execute.md`).
 8. **Ask the human** for manual testing when automation would need heavy setup (real services, UI, devices) or wouldn't give real confidence.
 9. **No secrets in `.aa/`.** Never copy values of env vars, keys, tokens, passwords or connection strings into `.aa/` files — `context.md` is meant to be committed. Write names only (`DATABASE_URL`), never values.

@@ -76,7 +76,12 @@ The examples use the manual-install name; with the plugin, write `/analyse-act:a
 /analyse-act "add CSV export" --tier L                 # force a tier
 /analyse-act "..." --from P                            # resume from a stage
 /analyse-act "..." --refresh                           # ignore the cache
+/analyse-act "fix the typo in the README"              # trivial: fast path, one y/n gate
+/analyse-act "..." --full                              # never take the fast path
+/analyse-act "..." --branch                            # work on a new aa/<task-slug> branch
 ```
+
+**Fast path.** A trivial change (one file, 5 lines or fewer, no behaviour change beyond the ask) skips the stages. You get the exact diff and reply `y` to apply it. Nothing is edited before you approve, on either path.
 
 See a full sample run in [docs/examples/bug-fix-walkthrough.md](docs/examples/bug-fix-walkthrough.md).
 
