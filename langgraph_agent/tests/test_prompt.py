@@ -2,7 +2,7 @@ import io
 
 import pytest
 
-from aa_agent.prompt import ask_decision, ask_plan
+from aa_agent.prompt import ask_decision, ask_plan, ask_stage
 
 APPROACHES = [
     {"id": "A", "title": "inline", "files": ["a.js"], "est_loc": 10, "risk": "Low"},
@@ -70,3 +70,15 @@ def test_ask_plan_approach_e_is_choosable(answers, expected):
     questions, ask = [], scripted(*answers)
     assert ask_plan(FIVE, lambda q: questions.append(q) or ask(q), io.StringIO()) == expected
     assert "edit to edit, q to quit" in questions[0]
+
+
+@pytest.mark.parametrize("answers,expected", [
+    (["c"], {"decision": "continue", "note": ""}),
+    (["n", "the bug is in refresh"], {"decision": "continue", "note": "the bug is in refresh"}),
+    (["?", "s"], {"decision": "stop", "note": ""}),
+    (["q"], None), ([EOFError()], None), (["n", EOFError()], None), (["?", "?", "?"], None),
+])
+def test_ask_stage(answers, expected):
+    out = io.StringIO()
+    assert ask_stage({"kind": "stage", "reason": "[A] done"}, scripted(*answers), out) == expected
+    assert "[A] done" in out.getvalue()

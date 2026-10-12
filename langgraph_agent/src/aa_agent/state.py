@@ -17,6 +17,7 @@ class AAState(TypedDict, total=False):
     tier: str | None  # forced tier (S|M|L); None = the model assigns it at [I]
     branch: bool  # create aa/<task-slug> before [E]
     checks: list[str]  # the only commands run_check may run (--check); never read from .aa/
+    guided: bool  # pause after each analysis stage ([A], [O], DELTA, [I]) for review or a note
 
     # progress
     cache: dict[str, Any]  # parsed aa-cache.sh output: status, reason, head, cached, changed
@@ -37,6 +38,7 @@ class AAState(TypedDict, total=False):
     drift_reported: bool  # [E]/[FIX] said it needed something outside the plan
     baseline_dirty: dict[str, str]  # file -> blob id, for files already changed before [E]
     drift_ok: list[str]  # keys (see drift_reasons) of drift the human already let through
+    notes: Annotated[list[dict[str, str]], operator.add]  # {stage, note} from guided pauses, for later stages
     diff_files: list[str]
     diff_loc: int
     status: str  # analysed | done | handed_off

@@ -56,7 +56,8 @@
         "properties": {
           "stage": { "enum": ["A", "O", "I", "P", "E", "V"] },
           "at": { "type": "string", "format": "date-time" },
-          "summary": { "type": "string" }
+          "summary": { "type": "string" },
+          "note": { "type": "string", "description": "The human's note given at a --guided pause after this stage" }
         },
         "required": ["stage", "summary"]
       }

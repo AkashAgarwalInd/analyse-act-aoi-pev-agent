@@ -87,3 +87,22 @@ def ask_decision(pause: dict, ask: Ask, out: TextIO, details: Callable[[], str] 
         print(f"answer c, s{', d' if details else ''} or q", file=out)
         tries += 1
     return None
+
+
+def ask_stage(pause: dict, ask: Ask, out: TextIO) -> dict | None:
+    """{"decision": "continue"|"stop", "note": str} at a guided stage pause, or None to quit. `n` asks for a
+    note (context or corrections) that the later stages get, then continues."""
+    print(f"\n{pause['reason']}", file=out)
+    for _ in range(TRIES):
+        answer = _read(ask, "[c]ontinue / [n]ote and continue / [s]top / [q]uit: ")
+        if answer is None or answer.lower() in ("q", "quit"):
+            return None
+        if answer.lower() in ("c", "continue"):
+            return {"decision": "continue", "note": ""}
+        if answer.lower() in ("n", "note"):
+            note = _read(ask, "Your note for the next stages: ")
+            return None if note is None else {"decision": "continue", "note": note}
+        if answer.lower() in ("s", "stop"):
+            return {"decision": "stop", "note": ""}
+        print("answer c, n, s or q", file=out)
+    return None

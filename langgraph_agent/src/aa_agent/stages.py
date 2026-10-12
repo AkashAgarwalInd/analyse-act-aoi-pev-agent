@@ -73,6 +73,9 @@ def task_message(stage: str, state: AAState) -> str:
         parts.append(f"Tier forced by the user: {state['tier']}")
     if stage in ("I", "P") and cache.get("status") == "HIT":
         parts.append("[A] and [O] were skipped on a cache HIT: read .aa/context.md and .aa/schema_cache.json.")
+    if state.get("notes"):
+        parts.append("The human's notes from earlier stages (corrections and context; they override your earlier "
+                     "findings):\n" + "\n".join(f"- after [{n['stage']}]: {n['note']}" for n in state["notes"]))
     if state.get("chosen"):
         parts.append(f"Approved approach: {state['chosen']}")
     if state.get("plan_edit"):

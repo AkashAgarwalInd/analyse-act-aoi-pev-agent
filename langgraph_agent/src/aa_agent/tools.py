@@ -65,6 +65,23 @@ def cache_stamp(repo: str) -> str:
     return out.strip().removeprefix("stamped=")
 
 
+CORRECTIONS = "## Human corrections"
+
+
+def cache_note(repo: str, stage: str, note: str) -> None:
+    """Append a guided note on [A]/[O] to .aa/context.md, so a later cache HIT on this commit reads the
+    correction instead of the findings it overrides. Writing the same note twice is a no-op."""
+    target = Path(repo) / ".aa" / "context.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = target.read_text() if target.exists() else ""
+    line = f"- after [{stage}]: {' '.join(note.split())}"
+    if line in text.splitlines():
+        return
+    if CORRECTIONS not in text.splitlines():
+        text = text.rstrip("\n") + ("\n\n" if text.strip() else "") + CORRECTIONS + "\n\n"
+    target.write_text(text.rstrip("\n") + "\n" + line + "\n")
+
+
 def slug(task: str, limit: int = 40) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", task.lower()).strip("-")
     return s[:limit].rstrip("-") or "task"

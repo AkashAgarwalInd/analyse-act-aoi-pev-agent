@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Guided mode (`--guided`, skill and `aa-agent`): the run also stops after each analysis stage that ran ([A], [O], a DELTA rescan, [I]) so you can review it, add context or stop. Context reaches every later stage's prompt (`aa-agent resume --note "…"`, which continues, or `n` with `-i`), and is saved on that stage's `stage_log` entry in `.aa/current_session.json`, so it carries over between the skill and `aa-agent` in both directions. A note after [A] or [O] is also added to `.aa/context.md` under `## Human corrections`, so a later cache HIT keeps the correction. `aa-agent` writes the session at each guided pause, and `resume -i` and `status` show the report of the stage being reviewed. A pause shows as `status=awaiting_stage_decision`. The example CI workflow has `guided` and `note` inputs. A trivial task still takes the fast path unless `--full` is given. The default stays approval-gated, and no mode skips the [P] gate.
 - Clickable gates: in Claude Code, the [P] plan gate uses AskUserQuestion, so you can click an approach (with a preview of its files, LOC and risk) or type changes to the plan. The fast-path, drift and budget gates are clickable too. The text reply still works, and is what headless runs and the other editors use.
 - `aa-agent run -i` / `resume -i` answers each pause in the terminal and carries on in the same process. `q` leaves the thread paused. It turns itself off without a TTY or in CI.
 - `aa-agent resume --edit` at a budget or drift pause is now an error instead of being silently ignored.

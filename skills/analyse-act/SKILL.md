@@ -23,12 +23,15 @@ ANALYSE (understand)                 ACT (change)
 /analyse-act "<task>" --refresh       # ignore cache, run [A] and [O] fully
 /analyse-act "<task>" --full          # never take the fast path, even for a trivial change
 /analyse-act "<task>" --branch        # create branch aa/<task-slug> at the start of [E]
+/analyse-act "<task>" --guided        # also pause after [A], [O], [I] to review each or add context
 ```
 
 (Installed as a plugin, the command is `/analyse-act:analyse-act`.)
 
 **This invocation:** `$ARGUMENTS`
 Parse it as: the task text (quoted or not) plus any flags above. If there is no task text and no `--from`, ask for the task before doing anything.
+
+**Modes.** By default the run is approval-gated: [A]/[O]/[I] run without stopping (reusing the cache), and the run stops at [P]. `--guided` also stops after each analysis stage that ran ([A], [O], a DELTA rescan, [I]) so the human can review it, add context or stop. No mode skips the [P] gate.
 
 A bare reply of `A`, `B`, … after the [P] gate means "approved, execute that approach". A bare `y` after the fast-path gate means "apply that change"; `full` means "run all stages instead".
 
@@ -57,9 +60,9 @@ After any scan ([A]/[O] or a DELTA patch), record it with `sh "${CLAUDE_SKILL_DI
 ## Session (`.aa/current_session.json`)
 
 - **New task** (no `--from`): if a session file exists for a different task, move it to `.aa/sessions/<YYYYMMDD-HHMMSS>.json`, then start a fresh one.
-- **`--from <stage>`**: load the session. If it is missing, or its `task` doesn't match the one given, say so and ask whether to start over from [I] — never execute a plan recorded for another task.
+- **`--from <stage>`**: load the session. If it is missing, or its `task` doesn't match the one given, say so and ask whether to start over from [I] — never execute a plan recorded for another task. Read every `note` on its `stage_log` entries (from guided pauses, yours or `aa-agent`'s): they are the human's corrections and override the earlier findings in every stage you run.
 - Append to `stage_log` at the end of each stage (schema: `schemas/session.schema.json`).
-- The headless runner (`aa-agent`) reads and writes the same file. A session it left at `awaiting_approval` can be continued here with `--from P`, and `aa-agent run --from-session` continues one you left at the [P] gate.
+- The headless runner (`aa-agent`) reads and writes the same file. It writes it at each guided stage pause too, so a run stopped there can be continued here with `--from <next stage>`. A session it left at `awaiting_approval` can be continued here with `--from P`, and `aa-agent run --from-session` continues one you left at the [P] gate.
 - Get every timestamp (session archive names, `at`, `last_updated`) from the clock: `date -u +%Y%m%d-%H%M%S` for file names, `date -u +%Y-%m-%dT%H:%M:%SZ` for JSON fields. Never invent times.
 
 ## Tier pre-assessment (right after Stage 0)
@@ -73,7 +76,7 @@ Right after the tier pre-assessment, decide whether the task is trivial. It is o
 - no behaviour change beyond the literal ask: a typo, a rename local to one file, a one-line config value;
 - you can name the exact location without scanning the repo.
 
-Dependency bumps never qualify: they touch the manifest and a lockfile, and can change behaviour. If anything is uncertain, or `--full` is set, run the normal stages. Otherwise:
+Dependency bumps never qualify: they touch the manifest and a lockfile, and can change behaviour. If anything is uncertain, or `--full` is set, run the normal stages. `--guided` doesn't change this: a trivial task still takes the fast path (there are no analysis stages to pause after); add `--full` to get the guided stages. Otherwise:
 
 ```
 ━━ [F] FAST PATH · cache HIT ━━
@@ -94,8 +97,9 @@ Always print the text first: the full report and the usual reply line (`Reply A 
 | Fast path | `Fast path` | `Apply`, `Full run` | the exact diff |
 | Drift ([E]) | `Drift` | `Continue`, `Stop and hand off` | what drifted: the extra files, LOC or scope |
 | Over budget | `Budget` | `Continue`, `Stop` | stage, tokens used vs budget |
+| Stage (`--guided`) | `Stage` | `Continue`, `Stop` | the stage summary |
 
-An option means the same as the typed reply (`A`, `y`, `full`, `continue`, `stop`). Free text ("Other") at [P] that is just an approach id (`C`, `b`) chooses that approach, including one beyond the four shown. Any other free text is a plan edit: record it as `plan_edit`, choose the approach it names (else the recommended one), and echo the edited approach in one line before [E]. If an edit adds files, LOC or a dependency the approach didn't have, show the changed approach and ask again instead of executing. Free text at any other gate is read as a typed reply. Clicking is approval for rule 1; nothing changes before it.
+An option means the same as the typed reply (`A`, `y`, `full`, `continue`, `stop`). Free text ("Other") at [P] that is just an approach id (`C`, `b`) chooses that approach, including one beyond the four shown. Any other free text is a plan edit: record it as `plan_edit`, choose the approach it names (else the recommended one), and echo the edited approach in one line before [E]. If an edit adds files, LOC or a dependency the approach didn't have, show the changed approach and ask again instead of executing. At a guided stage gate, free text other than `continue`/`stop` is context: record it as `note` on that stage's `stage_log` entry (after [A], [O] or a DELTA rescan, also append `- after [A]: <note>` or `- after [O]: <note>` under a `## Human corrections` heading at the end of `.aa/context.md`, so a later cache HIT keeps it), treat it as a correction that overrides your earlier findings from the next stage on, and continue. Free text at any other gate is read as a typed reply. Clicking is approval for rule 1; nothing changes before it.
 
 ## Stage banner (print at the start of every stage)
 
@@ -111,9 +115,9 @@ End every stage with a 1–3 line **Stage summary** and `→ next: [X]`. Keep st
 
 | Stage | Reference | Output | Stop? |
 |---|---|---|---|
-| [A] Analyse  | `references/analyse.md`  | `.aa/context.md` (stack, module map, HLD Mermaid) | no |
-| [O] Observe  | `references/observe.md`  | `.aa/schema_cache.json` + LLD/flow diagram for the relevant area | no |
-| [I] Inspect  | `references/inspect.md`  | RCA, Blast Radius Matrix, tier → `.aa/current_session.json` | only if `--analyse-only` |
+| [A] Analyse  | `references/analyse.md`  | `.aa/context.md` (stack, module map, HLD Mermaid) | only if `--guided` |
+| [O] Observe  | `references/observe.md`  | `.aa/schema_cache.json` + LLD/flow diagram for the relevant area | only if `--guided` |
+| [I] Inspect  | `references/inspect.md`  | RCA, Blast Radius Matrix, tier → `.aa/current_session.json` | if `--guided` or `--analyse-only` |
 | [P] Plan     | `references/plan.md`     | ≥2 approaches + Decision Matrix | **ALWAYS STOP — wait for human** |
 | [E] Execute  | `references/execute.md`  | Minimal diff + one self-review | stop if drifting from plan |
 | [V] Validate | `references/validate.md` | Requirement check, edge cases, tests, manual checklist, final card | end |

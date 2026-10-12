@@ -7,6 +7,8 @@
   aa-agent status --thread users-get-logged-out-early
   aa-agent resume --thread users-get-logged-out-early    # after a crash or Ctrl-C: retry the stage it stopped in
   aa-agent run --from-session      # continue at [P] from a session the interactive skill wrote
+  aa-agent run "users get logged out early" --guided    # also pause after [A], [O], [I] for review or a note
+  aa-agent resume --thread users-get-logged-out-early --note "the bug is in refresh, not login"    # = continue + note
 """
 
 import argparse
@@ -66,6 +68,15 @@ def _pause(snap) -> dict | None:
     return snap.interrupts[0].value if snap.interrupts else None
 
 
+def _print_paused_report(snap) -> None:
+    """Print again the report the pause asks the human to judge: [P] at the gate, the stage at a guided stop.
+    The run that stopped there printed it, but `resume -i` and `status` are new processes."""
+    pause = _pause(snap) or {}
+    letter = "P" if pause.get("kind") == "plan" else pause.get("stage") if pause.get("kind") == "stage" else None
+    if letter:
+        print(f"\n━━ [{letter}] {NAMES.get(letter, letter)} ━━\n{snap.values['outputs'].get(letter, '')}", flush=True)
+
+
 def _print_changes(snap) -> None:
     for path, loc in sorted(tools.diff_by_file(snap.values["repo"], snap.values.get("baseline_dirty", {})).items()):
         print(f"  {path}  {loc} LOC")
@@ -92,6 +103,8 @@ def _report(graph, config, plan_out: str | None) -> int:
             _print_changes(snap)
         print(f"status=awaiting_{pause['kind']}_decision thread={thread}")
         print(f"continue with: aa-agent resume --thread {thread} --decision <continue|stop>")
+        if pause["kind"] == "stage":
+            print(f'or add context: aa-agent resume --thread {thread} --note "<context for the next stages>"')
         return 0
     if snap.next:
         print(f"\nstopped inside {', '.join(snap.next)} (a crash or Ctrl-C)")
@@ -132,9 +145,11 @@ def _head_moved(snap) -> str | None:
     return None
 
 
-def _answer(snap, choice: str | None, edit: str | None, decision: str | None):
+def _answer(snap, choice: str | None, edit: str | None, decision: str | None, note: str | None = None):
     """(resume value, None) for the pause the thread is stopped at, or (None, error message)."""
     pause = _pause(snap)
+    if note and pause["kind"] != "stage":
+        return None, f"--note only applies at a guided stage pause; this is a {pause['kind']} pause"
     if pause["kind"] == "plan":
         ids = [a["id"] for a in snap.values.get("approaches", [])]
         choice = (choice or "").strip().upper()
@@ -143,8 +158,16 @@ def _answer(snap, choice: str | None, edit: str | None, decision: str | None):
         return {"choice": choice, "edit": edit or ""}, None
     if edit:
         return None, f"--edit only applies at the [P] gate; this is a {pause['kind']} pause"
+    if choice:
+        return None, f"--choice only applies at the [P] gate; this is a {pause['kind']} pause"
+    if pause["kind"] == "stage" and note:  # a note means continue with it
+        if decision == "stop":
+            return None, "--note is for continuing; drop it to stop"
+        return {"decision": "continue", "note": note}, None
     if not decision:
         return None, f"paused for {pause['kind']}: {pause['reason']}\npass --decision continue|stop"
+    if pause["kind"] == "stage":
+        return {"decision": decision, "note": ""}, None
     return decision, None
 
 
@@ -156,7 +179,11 @@ def _drive(graph, config, plan_out: str | None, ask: prompt.Ask) -> int:
         if pause["kind"] == "plan":
             _write_plan(snap, plan_out)
             picked = prompt.ask_plan(snap.values.get("approaches", []), ask, sys.stdout)
-            choice, edit, decision = (picked or {}).get("choice"), (picked or {}).get("edit"), None
+            choice, edit, decision, note = (picked or {}).get("choice"), (picked or {}).get("edit"), None, None
+        elif pause["kind"] == "stage":
+            picked = prompt.ask_stage(pause, ask, sys.stdout)
+            choice = edit = None
+            decision, note = (picked or {}).get("decision"), (picked or {}).get("note")
         else:
             details = None
             if pause["kind"] == "drift":
@@ -164,10 +191,10 @@ def _drive(graph, config, plan_out: str | None, ask: prompt.Ask) -> int:
                 baseline = snap.values.get("baseline_dirty", {})
                 details = functools.partial(tools.diff_text, snap.values["repo"], baseline)
             picked = decision = prompt.ask_decision(pause, ask, sys.stdout, details)
-            choice = edit = None
+            choice = edit = note = None
         if picked is None:
             break
-        answer, error = _answer(snap, choice, edit, decision)
+        answer, error = _answer(snap, choice, edit, decision, note)
         if error:
             return _fail(error)
         _stream(graph, Command(resume=answer), config)
@@ -201,11 +228,13 @@ def _seed_from_session(graph, config, args) -> int | None:
     plan = "\n".join(f"[{a['id']}] {a.get('title', '')}  files: {', '.join(a.get('files', []))}"
                      for a in approaches)
     tier = {"tier_assigned": data["tier"]} if data.get("tier") in CAPS else {}  # [I]'s tier, not a --tier
+    log = [e for e in data.get("stage_log", []) if isinstance(e, dict)]
+    notes = [{"stage": str(e.get("stage", "")), "note": e["note"]} for e in log if isinstance(e.get("note"), str)]
     graph.update_state(config, {
         **_payload(args, repo), **tier, "approaches": approaches,
         "outputs": {"P": f"(plan from the interactive session)\n{plan}"}, "last_stage": "P",
         "cache": {"status": "SESSION", "head": head or tools.git_head(repo), "changed": []},
-        "session_log": data.get("stage_log", []),
+        "session_log": log, "notes": notes,
     }, as_node="plan")
     return None
 
@@ -213,7 +242,7 @@ def _seed_from_session(graph, config, args) -> int | None:
 def _payload(args, repo: str) -> dict:
     return {
         "repo": repo, "task": args.task, "analyse_only": args.analyse_only, "refresh": args.refresh,
-        "tier": args.tier, "branch": args.branch, "checks": args.check,
+        "tier": args.tier, "branch": args.branch, "checks": args.check, "guided": args.guided,
         "outputs": {}, "stage_log": [], "retry_used": False,
     }
 
@@ -259,6 +288,8 @@ def _main(argv, run_stage, ask, running: dict) -> int:
     run.add_argument("--refresh", action="store_true", help="ignore the cache: full [A] and [O]")
     run.add_argument("--tier", choices=["S", "M", "L"])
     run.add_argument("--branch", action="store_true", help="create aa/<task-slug> before [E]")
+    run.add_argument("--guided", action="store_true",
+                     help="also pause after [A], [O] and [I] to review them or add a note; [P] still asks either way")
     run.add_argument(
         "--check", action="append", default=[],
         help="a test/lint command [E]/[V] may run, e.g. 'npm test' (repeatable). Nothing else can be run.",
@@ -271,7 +302,9 @@ def _main(argv, run_stage, ask, running: dict) -> int:
     resume.add_argument("--thread", required=True)
     resume.add_argument("--choice", help="at the [P] gate: the approach to execute")
     resume.add_argument("--edit", help="at the [P] gate: changes to the chosen approach, in plain words")
-    resume.add_argument("--decision", choices=["continue", "stop"], help="at a budget or drift pause")
+    resume.add_argument("--decision", choices=["continue", "stop"], help="at a budget, drift or guided stage pause")
+    resume.add_argument("--note", help="at a guided stage pause: continue, with context or corrections for the next "
+                        "stages")
     resume.add_argument("--model", default=DEFAULT_MODEL)
     common(resume)
     interactive(resume)
@@ -318,7 +351,7 @@ def _main(argv, run_stage, ask, running: dict) -> int:
         if not _pause(snap):
             if not snap.next:
                 return _fail(f"thread {args.thread!r} is not paused")
-            if set(snap.next) & set(EDITING_NODES) or args.choice or args.decision or args.edit:
+            if set(snap.next) & set(EDITING_NODES) or args.choice or args.decision or args.edit or args.note:
                 return _fail(f"thread {args.thread!r} was interrupted, not paused; {_retry_hint(snap, args.thread)}")
             if error := _head_moved(snap):
                 return _fail(error)
@@ -327,16 +360,16 @@ def _main(argv, run_stage, ask, running: dict) -> int:
             return _drive(graph, config, args.plan_out, ask) if ask else _report(graph, config, args.plan_out)
         if error := _head_moved(snap):
             return _fail(error)
-        if ask and not (args.choice or args.decision or args.edit):
-            if _pause(snap)["kind"] == "plan":  # the run that stopped here printed the report; show it again
-                print(f"\n━━ [P] {NAMES['P']} ━━\n{snap.values['outputs'].get('P', '')}", flush=True)
+        if ask and not (args.choice or args.decision or args.edit or args.note):
+            _print_paused_report(snap)
             return _drive(graph, config, args.plan_out, ask)
-        answer, error = _answer(snap, args.choice, args.edit, args.decision)
+        answer, error = _answer(snap, args.choice, args.edit, args.decision, args.note)
         if error:
             return _fail(error)
         _stream(graph, Command(resume=answer), config)
         return _drive(graph, config, args.plan_out, ask) if ask else _report(graph, config, args.plan_out)
 
+    _print_paused_report(snap)
     print(f"stages: {' → '.join(snap.values.get('stage_log', []))}")
     print(f"next: {snap.next or 'end'}")
     return _report(graph, config, args.plan_out)
